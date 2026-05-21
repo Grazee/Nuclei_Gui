@@ -62,3 +62,6 @@ bin/nuclei_linux
 
 # Windows special files
 nul
+
+data
+poc_library

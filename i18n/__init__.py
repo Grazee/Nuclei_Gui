@@ -41,18 +41,18 @@ def get_current_language():
     return _current_language
 
 
-def tr(key, **kwargs):
+def tr(key_name, **kwargs):
     """
     获取翻译文本
 
     参数:
-        key: 翻译键，如 'nav.scan_results'
+        key_name: 翻译键，如 'nav.scan_results'
         **kwargs: 占位符替换，如 tr('scan.progress', count=5)
 
     返回:
-        翻译后的文本，如果 key 不存在则返回 key 本身
+        翻译后的文本，如果 key_name 不存在则返回 key_name 本身
     """
-    text = _translations.get(key, key)
+    text = _translations.get(key_name, key_name)
     if kwargs:
         try:
             text = text.format(**kwargs)

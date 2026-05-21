@@ -10,7 +10,7 @@ from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QH
                              QToolBar, QAction, QFrame, QStackedWidget, QListWidget,
                              QListWidgetItem, QSizePolicy, QScrollArea)
 from PyQt5.QtCore import Qt, pyqtSlot, QSettings, QSize, QUrl, QTimer, QCoreApplication, QThread, pyqtSignal
-from PyQt5.QtGui import QFont, QIcon, QColor, QPainter, QBrush, QPen, QDesktopServices
+from PyQt5.QtGui import QFont, QIcon, QColor, QPainter, QBrush, QPen, QDesktopServices, QFontDatabase
 
 # ================= DPI 缩放系统（从公共模块导入） =================
 from core.ui_scale import (
@@ -238,22 +238,22 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Nuclei GUI Scanner - By 辰辰")
-        
+
         # 设置窗口图标（任务栏图标）
         self._set_window_icon()
-        
+
         # 初始化设置管理器（需要先初始化才能加载主题和窗口设置）
         self.settings = get_settings()
-        
+
         # 加载保存的主题
         self._load_saved_theme()
-        
+
         # 设置窗口尺寸 - 优先恢复保存的大小，否则根据屏幕分辨率自适应
         self._setup_window_size()
-        
+
         # 设置最小窗口尺寸
         self.setMinimumSize(scaled(900), scaled(600))
-        
+
         # 初始化核心组件
         self.poc_library = POCLibrary()
         self.pending_scan_pocs = set()  # 待扫描的 POC 队列
@@ -268,17 +268,28 @@ class MainWindow(QMainWindow):
         self._historical_severity_distribution = {'critical': 0, 'high': 0, 'medium': 0, 'low': 0, 'info': 0}
         self.scan_results_data = [] # 确保初始化
 
-        
+        # 初始化通用代理配置（用于加载POC、安装nuclei、请求AI、更新APP等）
+        from core.proxy_manager import set_proxy_config
+        proxy_config = self.settings.get_general_proxy_config()
+        set_proxy_config(
+            enabled=proxy_config.get("enabled", False),
+            proxy_type=proxy_config.get("type", "http"),
+            server=proxy_config.get("server", ""),
+            username=proxy_config.get("username", ""),
+            password=proxy_config.get("password", "")
+        )
+
+
         # 初始化 UI
         self.init_ui()
-        
+
         # 初始化快捷键
         self._setup_shortcuts()
-        
+
         # 加载 POC 列表
         # 加载 POC 列表
         self.refresh_poc_list()
-        
+
         # 连接任务队列信号
         from core.task_queue_manager import get_task_queue_manager
         self.task_queue = get_task_queue_manager()
@@ -286,12 +297,12 @@ class MainWindow(QMainWindow):
 
         # 启动时检查更新（如果启用）
         self._check_update_on_startup()
-    
+
     def _set_window_icon(self):
         """设置窗口图标（会显示在标题栏和任务栏）"""
         import os
         from PyQt5.QtGui import QIcon
-        
+
         # 图标文件路径优先级：icon.ico > icon.png
         icon_paths = [
             resource_path("resources", "icon.ico"),
@@ -299,59 +310,59 @@ class MainWindow(QMainWindow):
             external_path("icon.ico"),
             external_path("icon.png"),
         ]
-        
+
         for icon_path in icon_paths:
             if os.path.exists(icon_path):
                 self.setWindowIcon(QIcon(str(icon_path)))
                 return
-        
+
         # 如果没有找到图标文件，使用默认图标（可选：打印提示）
         # print("提示：未找到图标文件，使用默认图标。请将 icon.ico 或 icon.png 放入 resources 文件夹")
-    
+
     def _setup_shortcuts(self):
         """设置全局快捷键"""
         from PyQt5.QtWidgets import QShortcut
         from PyQt5.QtGui import QKeySequence
-        
+
         # Ctrl+N: 新建扫描
         shortcut_new = QShortcut(QKeySequence("Ctrl+N"), self)
         shortcut_new.activated.connect(self.show_new_scan_dialog)
-        
+
         # Ctrl+S: 保存设置
         shortcut_save = QShortcut(QKeySequence("Ctrl+S"), self)
         shortcut_save.activated.connect(self._save_all_settings)
-        
+
         # Ctrl+E: 导出结果
         shortcut_export = QShortcut(QKeySequence("Ctrl+E"), self)
         shortcut_export.activated.connect(self.export_results)
-        
+
         # F5: 刷新 POC 列表
         shortcut_refresh = QShortcut(QKeySequence("F5"), self)
         shortcut_refresh.activated.connect(self.refresh_poc_list)
-        
+
         # Escape: 停止扫描
         shortcut_stop = QShortcut(QKeySequence("Escape"), self)
         shortcut_stop.activated.connect(self._stop_scan_if_running)
-        
+
         # Ctrl+1 到 Ctrl+6: 快速切换页面
         for i in range(1, 7):
             shortcut = QShortcut(QKeySequence(f"Ctrl+{i}"), self)
             page_index = [2, 0, 1, 3, 4, 5][i-1]  # 映射到页面索引
             shortcut.activated.connect(lambda idx=page_index: self._switch_page(idx))
-        
+
         # Ctrl+F: 聚焦搜索框
         shortcut_search = QShortcut(QKeySequence("Ctrl+F"), self)
         shortcut_search.activated.connect(self._focus_search)
-        
+
         # Ctrl+L: 显示日志
         shortcut_log = QShortcut(QKeySequence("Ctrl+L"), self)
         shortcut_log.activated.connect(self.show_log_dialog)
-    
+
     def _stop_scan_if_running(self):
         """如果扫描正在运行则停止"""
         if self.scan_thread and self.scan_thread.isRunning():
             self.stop_scan()
-    
+
     def _focus_search(self):
         """聚焦到当前页面的搜索框"""
         current_index = self.content_stack.currentIndex()
@@ -359,7 +370,7 @@ class MainWindow(QMainWindow):
             self.poc_search_input.setFocus()
         elif current_index == 3 and hasattr(self, 'fofa_query_input'):
             self.fofa_query_input.setFocus()
-    
+
     def _load_saved_theme(self):
         """加载保存的主题到全局变量"""
         global FORTRESS_COLORS
@@ -367,15 +378,15 @@ class MainWindow(QMainWindow):
         if theme_name in THEME_PRESETS:
             FORTRESS_COLORS.clear()
             FORTRESS_COLORS.update(THEME_PRESETS[theme_name])
-    
+
     def _setup_window_size(self):
         """根据屏幕分辨率自动调整窗口大小，优先恢复保存的窗口大小"""
         from PyQt5.QtWidgets import QDesktopWidget
-        
+
         screen = QDesktopWidget().screenGeometry()
         screen_width = screen.width()
         screen_height = screen.height()
-        
+
         # 尝试恢复保存的窗口大小
         saved_geo = self.settings.get_window_geometry()
         if saved_geo["width"] > 0 and saved_geo["height"] > 0:
@@ -383,7 +394,7 @@ class MainWindow(QMainWindow):
             width = min(saved_geo["width"], screen_width - 50)
             height = min(saved_geo["height"], screen_height - 50)
             self.resize(width, height)
-            
+
             # 恢复窗口位置，确保在屏幕内
             x = saved_geo["x"]
             y = saved_geo["y"]
@@ -394,12 +405,12 @@ class MainWindow(QMainWindow):
             else:
                 # 居中显示
                 self.move((screen_width - self.width()) // 2, (screen_height - self.height()) // 2)
-            
+
             # 恢复最大化状态
             if saved_geo["maximized"]:
                 self.showMaximized()
             return
-        
+
         # 没有保存的大小，根据屏幕分辨率设置默认窗口大小
         if screen_width >= 1920:
             # 高分辨率屏幕
@@ -413,10 +424,10 @@ class MainWindow(QMainWindow):
         else:
             # 低分辨率屏幕
             self.resize(min(screen_width - scaled(50), scaled(1000)), min(screen_height - scaled(100), scaled(650)))
-        
+
         # 居中显示
         self.move((screen_width - self.width()) // 2, (screen_height - self.height()) // 2)
-    
+
     def closeEvent(self, event):
         """窗口关闭时保存窗口大小"""
         # 保存窗口几何信息
@@ -435,7 +446,7 @@ class MainWindow(QMainWindow):
         main_layout = QHBoxLayout(main_widget)
         main_layout.setContentsMargins(0, 0, 0, 0)
         main_layout.setSpacing(0)
-        
+
         # ===== 左侧导航栏 =====
         self.nav_panel = self._create_nav_panel()
         main_layout.addWidget(self.nav_panel)
@@ -476,56 +487,56 @@ class MainWindow(QMainWindow):
             border-radius: 12px;
         """))
         header_layout.addWidget(self.status_indicator)
-        
+
         content_layout.addWidget(self.page_header)
-        
+
         # 使用 QStackedWidget 切换不同页面内容
         self.content_stack = QStackedWidget()
         content_layout.addWidget(self.content_stack)
-        
+
         main_layout.addWidget(self.content_area, 1)
-        
+
         # 应用全局样式（滚动条、下拉框等）
         from core.fortress_style import get_global_stylesheet
         self.setStyleSheet(get_global_stylesheet(FORTRESS_COLORS))
 
-        
+
         # ===== 创建各个内容页面 =====
         # 页面 0: 扫描结果（默认）
         self.scan_tab = QWidget()
         self.setup_scan_tab()
         self.content_stack.addWidget(self.scan_tab)
-        
+
         # 页面 1: POC 管理
         self.poc_tab = QWidget()
         self.setup_poc_tab()
         self.content_stack.addWidget(self.poc_tab)
-        
+
         # 页面 2: 仪表盘
         self.dashboard_tab = QWidget()
         self.setup_dashboard_tab()
         self.content_stack.addWidget(self.dashboard_tab)
-        
+
         # 页面 3: FOFA 搜索（内嵌页面）
         self.fofa_page = self._create_fofa_page()
         self.content_stack.addWidget(self.fofa_page)
-        
+
         # 页面 4: AI 助手（内嵌页面）
         self.ai_page = self._create_ai_page()
         self.content_stack.addWidget(self.ai_page)
-        
+
         # 页面 5: 设置（内嵌页面）
         self.settings_page = self._create_settings_page()
         self.content_stack.addWidget(self.settings_page)
-        
+
         # 页面 6: 任务管理
         self.task_page = self._create_task_management_page()
         self.content_stack.addWidget(self.task_page)
-        
+
         # 默认显示仪表盘页
         self.content_stack.setCurrentIndex(2)
         self._update_nav_selection(2)
-        
+
         # 状态栏
         self.status_bar = self.statusBar()
         self.status_bar.setStyleSheet(f"""
@@ -536,7 +547,7 @@ class MainWindow(QMainWindow):
             }}
         """)
         self.status_bar.showMessage(tr("status.ready_simple"))
-    
+
     def _create_nav_panel(self):
         """创建左侧导航栏（支持 DPI 缩放）"""
         nav = QFrame()
@@ -652,7 +663,7 @@ class MainWindow(QMainWindow):
         nav_layout.addWidget(bottom_container)
 
         return nav
-    
+
     def _get_nav_item_style(self, is_active):
         """获取导航项样式（支持 DPI 缩放）"""
         if is_active:
@@ -683,12 +694,12 @@ class MainWindow(QMainWindow):
                     background-color: {FORTRESS_COLORS['nav_hover']};
                 }}
             """)
-    
+
     def _switch_page(self, page_index):
         """切换页面"""
         self.content_stack.setCurrentIndex(page_index)
         self._update_nav_selection(page_index)
-        
+
         # 更新页面标题
         titles = {
             0: (tr("nav.scan_results"), tr("page.scan_results_desc")),
@@ -702,25 +713,25 @@ class MainWindow(QMainWindow):
         title, subtitle = titles.get(page_index, ("", ""))
         self.page_title.setText(title)
         self.page_subtitle.setText(subtitle)
-    
+
     def _update_nav_selection(self, active_index):
         """更新导航项选中状态"""
         for btn, page_index in self.nav_items:
             btn.setStyleSheet(self._get_nav_item_style(page_index == active_index))
-    
+
     def _create_fofa_page(self):
         """创建 FOFA 搜索内嵌页面 - 完整功能"""
         from core.fofa_client import FofaSearchThread
         from core.history_manager import get_history_manager
-        
+
         page = QWidget()
         layout = QVBoxLayout(page)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(scaled(15))
-        
+
         # 使用分割器：左侧历史记录，右侧搜索区域
         splitter = QSplitter(Qt.Horizontal)
-        
+
         # ===== 左侧：历史记录 =====
         history_widget = QWidget()
         history_widget.setStyleSheet(scaled_style(f"background-color: {FORTRESS_COLORS['content_bg']}; border-radius: 8px;"))
@@ -731,26 +742,26 @@ class MainWindow(QMainWindow):
         history_title = QLabel(tr("fofa.search_history"))
         history_title.setStyleSheet(scaled_style(f"font-weight: bold; color: {FORTRESS_COLORS['text_primary']}; font-size: 14px;"))
         history_layout.addWidget(history_title)
-        
+
         self.fofa_history_list = QListWidget()
         from core.fortress_style import get_list_stylesheet
         self.fofa_history_list.setStyleSheet(get_list_stylesheet(FORTRESS_COLORS))
         self.fofa_history_list.itemDoubleClicked.connect(self._fofa_load_history_item)
         history_layout.addWidget(self.fofa_history_list)
-        
+
         # 历史记录按钮
         history_btn_row = QHBoxLayout()
         btn_load = self._create_fortress_button(tr("common.load"), "info")
         btn_load.clicked.connect(self._fofa_load_selected_history)
         history_btn_row.addWidget(btn_load)
-        
+
         btn_clear = self._create_fortress_button(tr("common.clear"), "warning")
         btn_clear.clicked.connect(self._fofa_clear_history)
         history_btn_row.addWidget(btn_clear)
         history_layout.addLayout(history_btn_row)
-        
+
         splitter.addWidget(history_widget)
-        
+
         # ===== 右侧：搜索和结果 =====
         right_widget = QWidget()
         right_widget.setStyleSheet(scaled_style(f"background-color: {FORTRESS_COLORS['content_bg']}; border-radius: 8px;"))
@@ -776,7 +787,7 @@ class MainWindow(QMainWindow):
         """))
         self.fofa_query_input.returnPressed.connect(self._fofa_do_search)
         search_row.addWidget(self.fofa_query_input, 1)
-        
+
         search_row.addWidget(QLabel(tr("fofa.count_label")))
         self.fofa_size_combo = QComboBox()
         self.fofa_size_combo.addItems(["100", "500", "1000", "5000", "10000"])
@@ -804,28 +815,28 @@ class MainWindow(QMainWindow):
         self.fofa_progress.hide()
         status_row.addWidget(self.fofa_progress)
         right_layout.addLayout(status_row)
-        
+
         # 工具栏
         toolbar = QHBoxLayout()
         btn_select_all = self._create_fortress_button(tr("common.select_all"), "info")
         btn_select_all.clicked.connect(self._fofa_select_all)
         toolbar.addWidget(btn_select_all)
-        
+
         btn_deselect = self._create_fortress_button(tr("common.deselect_all"), "info")
         btn_deselect.clicked.connect(self._fofa_deselect_all)
         toolbar.addWidget(btn_deselect)
-        
+
         toolbar.addStretch()
-        
+
         btn_import = self._create_fortress_button(tr("fofa.import_to_scan"), "primary")
         btn_import.clicked.connect(self._fofa_import_selected)
         toolbar.addWidget(btn_import)
-        
+
         self.fofa_count_label = QLabel(tr("fofa.result_count", count=0))
         self.fofa_count_label.setStyleSheet(f"color: {FORTRESS_COLORS['text_secondary']};")
         toolbar.addWidget(self.fofa_count_label)
         right_layout.addLayout(toolbar)
-        
+
         # 结果表格
         self.fofa_result_table = QTableWidget()
         self.fofa_result_table.setColumnCount(5)
@@ -842,24 +853,24 @@ class MainWindow(QMainWindow):
         from core.fortress_style import get_table_stylesheet
         self.fofa_result_table.setStyleSheet(get_table_stylesheet(FORTRESS_COLORS))
         right_layout.addWidget(self.fofa_result_table)
-        
+
         splitter.addWidget(right_widget)
         splitter.setSizes([250, 700])
-        
+
         layout.addWidget(splitter)
-        
+
         # 初始化数据
         self.fofa_history_manager = get_history_manager()
         self.fofa_current_results = []
         self._fofa_refresh_history()
-        
+
         return page
-    
+
     def _create_ai_page(self):
         """创建 AI 助手内嵌页面 - 完整功能"""
         from core.ai_client import AIWorkerThreadV2
         from core.history_manager import get_history_manager
-        
+
         page = QWidget()
         layout = QVBoxLayout(page)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -887,7 +898,7 @@ class MainWindow(QMainWindow):
                 color: {FORTRESS_COLORS['btn_primary']};
             }}
         """))
-        
+
         # Tab 1: FOFA 语法生成
         fofa_tab = QWidget()
         fofa_layout = QVBoxLayout(fofa_tab)
@@ -948,28 +959,28 @@ class MainWindow(QMainWindow):
         self.ai_analyze_input.setPlaceholderText(tr("ai.analyze_input_placeholder"))
         self.ai_analyze_input.setMaximumHeight(scaled(150))
         analyze_layout.addWidget(self.ai_analyze_input)
-        
+
         self.ai_analyze_btn = self._create_fortress_button(tr("ai.analyze_vuln"), "primary")
         self.ai_analyze_btn.clicked.connect(lambda: self._ai_do_task("analyze", self.ai_analyze_input, self.ai_analyze_output))
         analyze_layout.addWidget(self.ai_analyze_btn)
-        
+
         self.ai_analyze_output = QTextEdit()
         self.ai_analyze_output.setReadOnly(True)
         analyze_layout.addWidget(self.ai_analyze_output)
-        
+
         ai_tabs.addTab(analyze_tab, tr("ai.tab_vuln_analysis"))
 
         layout.addWidget(ai_tabs)
-        
+
         # 初始化
         self.ai_history_manager = get_history_manager()
-        
+
         return page
-    
+
     def _create_settings_page(self):
         """创建设置内嵌页面 - 完整功能"""
         from core.settings_manager import get_settings
-        
+
         page = QWidget()
         layout = QVBoxLayout(page)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -997,7 +1008,129 @@ class MainWindow(QMainWindow):
                 color: {FORTRESS_COLORS['btn_primary']};
             }}
         """))
-        
+
+        # Tab 0: 通用设置（工具自身参数）
+        general_tab = QWidget()
+        general_layout = QVBoxLayout(general_tab)
+        general_layout.setContentsMargins(scaled(25), scaled(25), scaled(25), scaled(25))
+        general_layout.setSpacing(scaled(15))
+
+        general_form = QGridLayout()
+        general_form.setSpacing(scaled(15))
+
+        # 应用信息组
+        general_group = QGroupBox(tr("settings.general.app_name"))
+        general_group.setStyleSheet(scaled_style(f"""
+            QGroupBox {{
+                font-size: 14px;
+                font-weight: bold;
+                color: {FORTRESS_COLORS['text_primary']};
+                border: 1px solid {FORTRESS_COLORS['nav_border']};
+                border-radius: 8px;
+                margin-top: 12px;
+                padding-top: 10px;
+            }}
+            QGroupBox::title {{
+                subcontrol-origin: margin;
+                left: 15px;
+                padding: 0 8px;
+            }}
+        """))
+        info_layout = QVBoxLayout(general_group)
+
+        from core.version import __version__, __author__
+        info_layout.addWidget(QLabel(f"<b>{tr('settings.general.app_name')}:</b> Nuclei GUI Scanner"))
+        info_layout.addWidget(QLabel(f"<b>{tr('settings.general.app_version')}:</b> v{__version__}"))
+        info_layout.addWidget(QLabel(f"<b>作者:</b> {__author__}"))
+
+        general_form.addWidget(general_group, 0, 0, 1, 2)
+
+        # 日志级别设置
+        general_form.addWidget(QLabel(tr("settings.general.log_level")), 1, 0)
+        self.settings_log_level = QComboBox()
+        self.settings_log_level.addItems(["DEBUG", "INFO", "WARNING", "ERROR"])
+        self.settings_log_level.setMinimumWidth(scaled(150))
+        general_form.addWidget(self.settings_log_level, 1, 1)
+
+        # 自动保存设置
+        self.settings_auto_save = QCheckBox(tr("settings.general.auto_save"))
+        self.settings_auto_save.setChecked(True)
+        general_form.addWidget(self.settings_auto_save, 2, 0, 1, 2)
+
+        # 启动时自动扫描
+        self.settings_startup_scan = QCheckBox(tr("settings.general.startup_scan"))
+        general_form.addWidget(self.settings_startup_scan, 3, 0, 1, 2)
+
+        # 声音通知
+        self.settings_sound_notification = QCheckBox(tr("settings.general.sound_notification"))
+        general_form.addWidget(self.settings_sound_notification, 4, 0, 1, 2)
+
+        # 关闭前确认
+        self.settings_confirm_close = QCheckBox(tr("settings.general.confirm_before_close"))
+        self.settings_confirm_close.setChecked(True)
+        general_form.addWidget(self.settings_confirm_close, 5, 0, 1, 2)
+
+        # 代理设置组
+        proxy_group = QGroupBox(tr("settings.general.enable_proxy"))
+        proxy_group.setStyleSheet(scaled_style(f"""
+            QGroupBox {{
+                font-size: 14px;
+                font-weight: bold;
+                color: {FORTRESS_COLORS['text_primary']};
+                border: 1px solid {FORTRESS_COLORS['nav_border']};
+                border-radius: 8px;
+                margin-top: 12px;
+                padding-top: 10px;
+            }}
+            QGroupBox::title {{
+                subcontrol-origin: margin;
+                left: 15px;
+                padding: 0 8px;
+            }}
+        """))
+        proxy_layout = QGridLayout(proxy_group)
+        proxy_layout.setSpacing(scaled(12))
+
+        # 启用代理复选框
+        self.settings_proxy_enable = QCheckBox(tr("settings.general.enable_proxy"))
+        proxy_layout.addWidget(self.settings_proxy_enable, 0, 0, 1, 2)
+
+        # 代理类型
+        proxy_layout.addWidget(QLabel(tr("settings.general.proxy_type")), 1, 0)
+        self.settings_proxy_type = QComboBox()
+        self.settings_proxy_type.addItem("HTTP", "http")
+        self.settings_proxy_type.addItem("HTTPS", "https")
+        self.settings_proxy_type.addItem("SOCKS5", "socks5")
+        self.settings_proxy_type.setMinimumWidth(scaled(150))
+        proxy_layout.addWidget(self.settings_proxy_type, 1, 1)
+
+        # 代理服务器
+        proxy_layout.addWidget(QLabel(tr("settings.general.proxy_server")), 2, 0)
+        self.settings_proxy_server = QLineEdit()
+        self.settings_proxy_server.setPlaceholderText("例如: 127.0.0.1:7890")
+        self.settings_proxy_server.setMinimumWidth(scaled(250))
+        proxy_layout.addWidget(self.settings_proxy_server, 2, 1)
+
+        # 代理用户名
+        proxy_layout.addWidget(QLabel(tr("settings.general.proxy_username")), 3, 0)
+        self.settings_proxy_username = QLineEdit()
+        self.settings_proxy_username.setPlaceholderText(tr("settings.proxy_username"))
+        proxy_layout.addWidget(self.settings_proxy_username, 3, 1)
+
+        # 代理密码
+        proxy_layout.addWidget(QLabel(tr("settings.general.proxy_password")), 4, 0)
+        self.settings_proxy_password = QLineEdit()
+        self.settings_proxy_password.setEchoMode(QLineEdit.Password)
+        self.settings_proxy_password.setPlaceholderText(tr("settings.proxy_password"))
+        proxy_layout.addWidget(self.settings_proxy_password, 4, 1)
+
+        general_form.addWidget(proxy_group, 6, 0, 1, 2)
+
+        general_layout.addLayout(general_form)
+        general_layout.addStretch()
+
+        settings_tabs.addTab(general_tab, tr("settings.tab_general"))
+
         # Tab 1: 扫描参数
         scan_tab = QWidget()
         scan_layout = QVBoxLayout(scan_tab)
@@ -1008,7 +1141,7 @@ class MainWindow(QMainWindow):
         form_container = QWidget()
         form_layout = QGridLayout(form_container)
         form_layout.setSpacing(scaled(15))
-        
+
         row = 0
         # 超时时间
         form_layout.addWidget(QLabel(tr("settings.request_timeout")), row, 0)
@@ -1016,7 +1149,7 @@ class MainWindow(QMainWindow):
         self.settings_timeout.setRange(1, 60)
         self.settings_timeout.setValue(5)
         form_layout.addWidget(self.settings_timeout, row, 1)
-        
+
         row += 1
         # 并发数
         form_layout.addWidget(QLabel(tr("settings.concurrent_requests")), row, 0)
@@ -1024,7 +1157,7 @@ class MainWindow(QMainWindow):
         self.settings_rate_limit.setRange(1, 1000)
         self.settings_rate_limit.setValue(150)
         form_layout.addWidget(self.settings_rate_limit, row, 1)
-        
+
         row += 1
         # 批量大小
         form_layout.addWidget(QLabel(tr("settings.bulk_size")), row, 0)
@@ -1032,7 +1165,7 @@ class MainWindow(QMainWindow):
         self.settings_bulk_size.setRange(1, 100)
         self.settings_bulk_size.setValue(25)
         form_layout.addWidget(self.settings_bulk_size, row, 1)
-        
+
         row += 1
         # 重试次数
         form_layout.addWidget(QLabel(tr("settings.retries")), row, 0)
@@ -1040,47 +1173,47 @@ class MainWindow(QMainWindow):
         self.settings_retries.setRange(0, 10)
         self.settings_retries.setValue(0)
         form_layout.addWidget(self.settings_retries, row, 1)
-        
+
         row += 1
         # 代理设置
         form_layout.addWidget(QLabel(tr("settings.proxy_server")), row, 0)
         self.settings_proxy = QLineEdit()
         self.settings_proxy.setPlaceholderText(tr("settings.proxy_placeholder"))
         form_layout.addWidget(self.settings_proxy, row, 1)
-        
+
         row += 1
         # 选项 - 使用水平布局
         options_label = QLabel(tr("settings.advanced_options"))
         options_label.setStyleSheet(f"font-weight: bold; color: {FORTRESS_COLORS['text_primary']};")
         form_layout.addWidget(options_label, row, 0, 1, 2)
-        
+
         row += 1
         options_row1 = QHBoxLayout()
         self.settings_follow_redirects = QCheckBox(tr("settings.follow_redirects"))
         options_row1.addWidget(self.settings_follow_redirects)
-        
+
         self.settings_stop_at_first = QCheckBox(tr("settings.stop_at_first"))
         options_row1.addWidget(self.settings_stop_at_first)
         options_row1.addStretch()
         form_layout.addLayout(options_row1, row, 0, 1, 2)
-        
+
         row += 1
         options_row2 = QHBoxLayout()
         self.settings_no_httpx = QCheckBox(tr("settings.skip_probe"))
         options_row2.addWidget(self.settings_no_httpx)
-        
+
         self.settings_verbose = QCheckBox(tr("settings.verbose_log"))
         options_row2.addWidget(self.settings_verbose)
         options_row2.addStretch()
         form_layout.addLayout(options_row2, row, 0, 1, 2)
-        
+
         row += 1
         self.settings_use_native = QCheckBox(tr("settings.use_native_scanner"))
         form_layout.addWidget(self.settings_use_native, row, 0, 1, 2)
 
         scan_layout.addWidget(form_container)
         scan_layout.addStretch()
-        
+
         settings_tabs.addTab(scan_tab, tr("settings.tab_scan_params"))
 
         # Tab 2: DNSLog / OAST
@@ -1151,7 +1284,7 @@ class MainWindow(QMainWindow):
         dnslog_layout.addStretch()
 
         settings_tabs.addTab(dnslog_tab, tr("settings.tab_dnslog"))
-        
+
         # Tab 3: FOFA 配置
         fofa_tab = QWidget()
         fofa_layout = QVBoxLayout(fofa_tab)
@@ -1160,30 +1293,30 @@ class MainWindow(QMainWindow):
 
         fofa_form = QGridLayout()
         fofa_form.setSpacing(scaled(15))
-        
+
         fofa_form.addWidget(QLabel("FOFA API URL:"), 0, 0)
         self.settings_fofa_url = QLineEdit()
         self.settings_fofa_url.setPlaceholderText("https://fofa.info/api/v1/search/all")
         fofa_form.addWidget(self.settings_fofa_url, 0, 1)
-        
+
         fofa_form.addWidget(QLabel("Email:"), 1, 0)
         self.settings_fofa_email = QLineEdit()
         fofa_form.addWidget(self.settings_fofa_email, 1, 1)
-        
+
         fofa_form.addWidget(QLabel("API Key:"), 2, 0)
         self.settings_fofa_key = QLineEdit()
         self.settings_fofa_key.setEchoMode(QLineEdit.Password)
         fofa_form.addWidget(self.settings_fofa_key, 2, 1)
-        
+
         fofa_layout.addLayout(fofa_form)
-        
+
         btn_test_fofa = self._create_fortress_button(tr("settings.test_connection"), "info")
         btn_test_fofa.clicked.connect(self._test_fofa_connection)
         fofa_layout.addWidget(btn_test_fofa)
 
         fofa_layout.addStretch()
         settings_tabs.addTab(fofa_tab, tr("settings.tab_fofa_config"))
-        
+
         # Tab 3: AI 配置
         ai_tab = QWidget()
         ai_layout = QVBoxLayout(ai_tab)
@@ -1235,7 +1368,7 @@ class MainWindow(QMainWindow):
         self.btn_toggle_key.clicked.connect(self._toggle_api_key_visibility)
         api_key_row.addWidget(self.btn_toggle_key)
         ai_form.addLayout(api_key_row, 2, 1)
-        
+
         ai_form.addWidget(QLabel(tr("settings.model")), 3, 0)
         self.settings_ai_model = QComboBox()
         self.settings_ai_model.setEditable(True)
@@ -1374,7 +1507,7 @@ class MainWindow(QMainWindow):
         theme_layout.addLayout(theme_form)
         theme_layout.addStretch()
         settings_tabs.addTab(theme_tab, tr("settings.tab_theme"))
-        
+
         # Tab 5: Nuclei 管理
         nuclei_tab = QWidget()
         nuclei_layout = QVBoxLayout(nuclei_tab)
@@ -1401,19 +1534,19 @@ class MainWindow(QMainWindow):
         """))
         info_layout = QGridLayout(info_group)
         info_layout.setSpacing(scaled(10))
-        
+
         import platform
         system = platform.system()
         machine = platform.machine()
         info_layout.addWidget(QLabel(tr("nuclei.os")), 0, 0)
         info_layout.addWidget(QLabel(f"{system} {machine}"), 0, 1)
-        
+
         info_layout.addWidget(QLabel(tr("nuclei.status_label")), 1, 0)
         self.nuclei_status_label = QLabel(tr("nuclei.detecting"))
         info_layout.addWidget(self.nuclei_status_label, 1, 1)
-        
+
         nuclei_layout.addWidget(info_group)
-        
+
         # Nuclei 下载管理组
         download_group = QGroupBox(tr("nuclei.download_management"))
         download_group.setStyleSheet(scaled_style(f"""
@@ -1433,30 +1566,30 @@ class MainWindow(QMainWindow):
             }}
         """))
         download_layout = QVBoxLayout(download_group)
-        
+
         # 说明文本
         desc_label = QLabel(tr("nuclei.download_desc"))
         desc_label.setStyleSheet(scaled_style(f"color: {FORTRESS_COLORS['text_secondary']}; font-size: 12px; padding: 10px;"))
         download_layout.addWidget(desc_label)
-        
+
         # 按钮区域
         btn_layout = QHBoxLayout()
-        
+
         self.download_nuclei_btn = self._create_fortress_button(tr("nuclei.download_latest"), "info")
         self.download_nuclei_btn.clicked.connect(self._download_nuclei)
         btn_layout.addWidget(self.download_nuclei_btn)
-        
+
         self.check_nuclei_btn = self._create_fortress_button(tr("nuclei.detect"), "success")
         self.check_nuclei_btn.clicked.connect(self._check_nuclei_status)
         btn_layout.addWidget(self.check_nuclei_btn)
-        
+
         download_layout.addLayout(btn_layout)
-        
+
         # 进度显示
         self.nuclei_progress_label = QLabel("")
         self.nuclei_progress_label.setStyleSheet(scaled_style(f"color: {FORTRESS_COLORS['text_secondary']}; font-size: 11px; padding: 5px;"))
         download_layout.addWidget(self.nuclei_progress_label)
-        
+
         nuclei_layout.addWidget(download_group)
         nuclei_layout.addStretch()
 
@@ -1600,25 +1733,25 @@ class MainWindow(QMainWindow):
         btn_row.addWidget(btn_save)
 
         layout.addLayout(btn_row)
-        
+
         # 加载当前设置
         self._load_all_settings()
-        
+
         return page
-    
+
     def _create_task_management_page(self):
         """创建任务管理页面 - 管理扫描任务队列"""
         from PyQt5.QtCore import QTimer
         from core.task_queue_manager import get_task_queue_manager, TaskStatus
-        
+
         page = QWidget()
         layout = QVBoxLayout(page)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(scaled(15))
-        
+
         # 顶部描述和操作按钮
         top_row = QHBoxLayout()
-        
+
         desc_label = QLabel(tr("task.description"))
         desc_label.setStyleSheet(scaled_style(f"color: {FORTRESS_COLORS['text_secondary']}; font-size: 13px;"))
         top_row.addWidget(desc_label)
@@ -1687,7 +1820,7 @@ class MainWindow(QMainWindow):
         btn_delete = self._create_fortress_button(tr("task.delete_selected"), "warning")
         btn_delete.clicked.connect(self._delete_selected_task)
         btn_row.addWidget(btn_delete)
-        
+
         btn_clear = self._create_fortress_button(tr("task.clear_completed"), "secondary")
         btn_clear.clicked.connect(self._clear_completed_tasks)
         btn_row.addWidget(btn_clear)
@@ -1698,45 +1831,45 @@ class MainWindow(QMainWindow):
         self.task_status_label = QLabel(tr("task.total_count", count=0))
         self.task_status_label.setStyleSheet(scaled_style(f"color: {FORTRESS_COLORS['text_secondary']}; font-size: 12px;"))
         layout.addWidget(self.task_status_label)
-        
+
         # 设置定时器自动刷新
         self.task_refresh_timer = QTimer(self)
         self.task_refresh_timer.timeout.connect(self._refresh_task_list)
         self.task_refresh_timer.start(1000)  # 每秒刷新
-        
+
         # 初始加载
         self._refresh_task_list()
-        
+
         return page
-    
+
     def _refresh_task_list(self):
         """刷新任务列表"""
         from core.task_queue_manager import get_task_queue_manager, TaskStatus
-        
+
         # 保存当前选中的任务ID
         selected_task_id = self._get_selected_task_id() if hasattr(self, 'task_table') else None
-        
+
         queue = get_task_queue_manager()
         tasks = queue.get_all_tasks()
-        
+
         # 获取筛选条件
         status_filter = self.task_status_filter.currentText() if hasattr(self, 'task_status_filter') else tr("filter.all")
-        
+
         # 状态映射（使用显示名到枚举的映射）
         status_map = {}
         for ts in [TaskStatus.PENDING, TaskStatus.RUNNING, TaskStatus.PAUSED,
                     TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.CANCELLED]:
             status_map[ts.display_name()] = ts
-        
+
         # 筛选任务
         if status_filter != tr("filter.all") and status_filter in status_map:
             tasks = [t for t in tasks if t.status == status_map[status_filter]]
-        
+
         # 更新表格
         self.task_table.setUpdatesEnabled(False)
         self.task_table.setRowCount(0)
         self.task_table.setRowCount(len(tasks))
-        
+
         for row, task in enumerate(tasks):
             # 任务ID
             id_item = QTableWidgetItem(task.id)
@@ -1785,9 +1918,9 @@ class MainWindow(QMainWindow):
             if task.status == TaskStatus.RUNNING:
                 duration_item.setForeground(QColor("#3b82f6"))  # 运行中显示蓝色
             self.task_table.setItem(row, 8, duration_item)
-        
+
         self.task_table.setUpdatesEnabled(True)
-        
+
         # 恢复之前选中的任务
         if selected_task_id:
             for row in range(self.task_table.rowCount()):
@@ -1795,7 +1928,7 @@ class MainWindow(QMainWindow):
                 if id_item and id_item.data(Qt.UserRole) == selected_task_id:
                     self.task_table.selectRow(row)
                     break
-        
+
         # 更新状态栏
         status = queue.get_queue_status()
         self.task_status_label.setText(
@@ -1805,7 +1938,7 @@ class MainWindow(QMainWindow):
                completed=status['completed'], failed=status['failed'],
                cancelled=status['cancelled'])
         )
-    
+
     def _filter_task_list(self):
         """根据状态筛选任务列表"""
         self._refresh_task_list()
@@ -1852,7 +1985,7 @@ class MainWindow(QMainWindow):
         row = selected[0].row()
         id_item = self.task_table.item(row, 0)
         return id_item.data(Qt.UserRole) if id_item else None
-    
+
     def _start_selected_task(self):
         """启动选中的任务"""
         from core.task_queue_manager import get_task_queue_manager
@@ -1884,7 +2017,7 @@ class MainWindow(QMainWindow):
         from core.task_queue_manager import get_task_queue_manager
         queue = get_task_queue_manager()
         worker = queue.get_worker(task_id)
-        
+
         if not worker:
             return
 
@@ -1927,23 +2060,23 @@ class MainWindow(QMainWindow):
             worker.log_signal.connect(self.append_log)
             # 测试日志，验证绑定成功
             self.append_log(f"[DEBUG] UI signals bound (TaskID: {task_id})")
-            
+
             # result_found -> add_scan_result
             worker.result_found.connect(self._on_worker_result_found)
 
             # task_progress -> update_progress
             worker.task_progress.connect(self._on_worker_progress)
-            
+
             # task_completed -> scan_finished
             worker.task_completed.connect(self._on_worker_completed)
-            
+
             # task_failed -> 日志 + 结束
             worker.task_failed.connect(self._on_worker_failed)
-            
+
         except TypeError as e:
             QMessageBox.critical(self, tr("msg.error"), tr("task.signal_bindng_failed", error=str(e)))
             return
-        
+
         # 3. 启用控制按钮
         self.btn_stop.setEnabled(True)
         self.btn_pause.setEnabled(True)
@@ -1959,7 +2092,7 @@ class MainWindow(QMainWindow):
         """))
 
     # --- Worker 信号处理槽函数 ---
-    
+
     def _on_worker_progress(self, task_id, progress):
         """处理 Worker 进度信号"""
         try:
@@ -1999,20 +2132,20 @@ class MainWindow(QMainWindow):
         """添加扫描结果"""
         # DEBUG LOG
         # self.append_log(f"[DEBUG] add_scan_result called: {result.get('info', {}).get('name')}")
-        
+
         # 更新数据
         self.scan_results_data.append(result)
 
-        
+
         # 更新表格
         row = self.result_table.rowCount()
         self.result_table.insertRow(row)
-        
+
         # 1. 状态图标
         status_item = QTableWidgetItem("✅")
         status_item.setTextAlignment(Qt.AlignCenter)
         self.result_table.setItem(row, 0, status_item)
-        
+
         # 2. 漏洞名称
         info = result.get('info', {})
         name = info.get('name', 'Unknown')
@@ -2020,11 +2153,11 @@ class MainWindow(QMainWindow):
         # 存储完整数据以便查看详情
         name_item.setData(Qt.UserRole, result)
         self.result_table.setItem(row, 1, name_item)
-        
+
         # 3. 严重程度
         severity = info.get('severity', 'unknown').lower()
         sev_item = QTableWidgetItem(display_severity(severity))
-        
+
         # 设置颜色
         sev_colors = {
             'critical': ('#ef4444', '#ffffff'),
@@ -2040,11 +2173,11 @@ class MainWindow(QMainWindow):
         sev_item.setTextAlignment(Qt.AlignCenter)
         sev_item.setFont(QFont("Arial", scaled(9), QFont.Bold))
         self.result_table.setItem(row, 2, sev_item)
-        
+
         # 4. 目标
         host = result.get('host', '')
         self.result_table.setItem(row, 3, QTableWidgetItem(host))
-        
+
         # 5. 发现时间
         timestamp = result.get('timestamp', '')
         # 格式化时间
@@ -2057,7 +2190,7 @@ class MainWindow(QMainWindow):
         except (ValueError, AttributeError):
             time_str = datetime.now().strftime("%H:%M:%S")
         self.result_table.setItem(row, 4, QTableWidgetItem(time_str))
-        
+
         # 6. 操作按钮
         btn_detail = QPushButton(tr("common.detail"))
         btn_detail.setCursor(Qt.PointingHandCursor)
@@ -2084,10 +2217,10 @@ class MainWindow(QMainWindow):
         l_detail.setContentsMargins(scaled(5), scaled(2), scaled(5), scaled(2))
         l_detail.addWidget(btn_detail)
         self.result_table.setCellWidget(row, 5, w_detail)
-        
+
         # 滚动到底部
         self.result_table.scrollToBottom()
-        
+
         # 更新实时统计
         self._update_dashboard_vuln_count_realtime()
 
@@ -2187,11 +2320,11 @@ class MainWindow(QMainWindow):
             from core.task_queue_manager import get_task_queue_manager
             queue = get_task_queue_manager()
             queue.cancel_task(self.current_task_id)
-            
+
             self.append_log("[INFO] Stopping scan...")
             # self.btn_stop.setEnabled(False) # 不要在这里禁用，等待 scan_finished 处理，确保 _on_task_status_changed 能通过检查
             # self.btn_pause.setEnabled(False)
-            
+
             # QTimer removed to allow signal handler to manage completion
 
 
@@ -2201,7 +2334,7 @@ class MainWindow(QMainWindow):
         if hasattr(self, 'current_task_id') and self.current_task_id:
             from core.task_queue_manager import get_task_queue_manager
             queue = get_task_queue_manager()
-            
+
             if self.btn_pause.text() == tr("task.pause"):
                 if queue.pause_task(self.current_task_id):
                     self.btn_pause.setText(tr("task.continue"))
@@ -2219,28 +2352,28 @@ class MainWindow(QMainWindow):
         if self.btn_stop.isEnabled():
             QMessageBox.warning(self, tr("msg.warning"), tr("scan.already_running"))
             return
-            
+
         # 获取待扫描目标
         targets = parse_targets_text(self.txt_targets.toPlainText() if hasattr(self, "txt_targets") else "")
         if not targets:
             QMessageBox.warning(self, tr("msg.hint"), tr("scan.add_targets_first"))
             self._switch_page(0) # 扫描结果页
             return
-            
+
         # 获取待扫描 POC
         pocs = list(self.pending_scan_pocs)
         if not pocs:
             QMessageBox.warning(self, tr("msg.hint"), tr("scan.select_pocs_first"))
             self._switch_page(1) # POC 管理页
             return
-            
+
         # 记录开始时间
         self.scan_start_time = datetime.now()
-        
+
         # 添加并启动任务
         # self._add_task_to_queue(targets, pocs, priority=None)  <-- Removed redundant call
 
-        
+
         # 自动启动刚添加的任务（假设它是唯一的或排在最前）
         # 这里需要获取刚添加的任务ID，_add_task_to_queue 会弹窗提示ID，但我们想自动开始
         # 优化流程：直接调用 task_queue.add_task 并设置 auto_start=True
@@ -2269,9 +2402,9 @@ class MainWindow(QMainWindow):
             priority=TaskPriority.NORMAL,
             auto_start=True  # 自动启动
         )
-        
+
         self.current_task_id = task_id
-        
+
         # 绑定 UI
         self._batch_bind_ui = lambda tid=task_id: self._bind_running_task_to_ui(tid)
         # queue.start_task(task_id, pre_start_callback=self._batch_bind_ui) # add_task(auto_start=True) 已经启动了
@@ -2279,7 +2412,7 @@ class MainWindow(QMainWindow):
         # 这其实是 TaskQueueManager 的一个小设计问题，auto_start 没法传 callback
         # 所以我们这里手动绑定
         self._bind_running_task_to_ui(task_id)
-        
+
         self._switch_page(0)
 
     def _on_task_status_changed(self, task_id, status):
@@ -2339,15 +2472,15 @@ class MainWindow(QMainWindow):
         """暂停选中的任务"""
         from core.task_queue_manager import get_task_queue_manager, TaskStatus
 
-        
+
         task_id = self._get_selected_task_id()
         if not task_id:
             QMessageBox.warning(self, tr("msg.hint"), tr("task.select_task_first"))
             return
-        
+
         queue = get_task_queue_manager()
         task = queue.get_task(task_id)
-        
+
         if not task:
             QMessageBox.warning(self, tr("msg.failure"), tr("task.not_found", task_id=task_id))
             return
@@ -2362,26 +2495,26 @@ class MainWindow(QMainWindow):
                 QMessageBox.warning(self, tr("msg.failure"), tr("task.cannot_pause", task_id=task_id))
             self._refresh_task_list()
             return
-        
+
         # 尝试通过队列管理器暂停（队列内部任务）
         if queue.pause_task(task_id):
             QMessageBox.information(self, tr("msg.success"), tr("task.paused", task_id=task_id))
             self._refresh_task_list()
         else:
             QMessageBox.warning(self, tr("msg.failure"), tr("task.cannot_pause", task_id=task_id))
-    
+
     def _resume_selected_task(self):
         """恢复选中的任务"""
         from core.task_queue_manager import get_task_queue_manager, TaskStatus
-        
+
         task_id = self._get_selected_task_id()
         if not task_id:
             QMessageBox.warning(self, tr("msg.hint"), tr("task.select_task_first"))
             return
-        
+
         queue = get_task_queue_manager()
         task = queue.get_task(task_id)
-        
+
         if not task:
             QMessageBox.warning(self, tr("msg.failure"), tr("task.not_found", task_id=task_id))
             return
@@ -2396,30 +2529,30 @@ class MainWindow(QMainWindow):
                 QMessageBox.warning(self, tr("msg.failure"), tr("task.cannot_resume", task_id=task_id))
             self._refresh_task_list()
             return
-        
+
         # 尝试通过队列管理器恢复（队列内部任务）
         if queue.resume_task(task_id):
             QMessageBox.information(self, tr("msg.success"), tr("task.resumed", task_id=task_id))
             self._refresh_task_list()
         else:
             QMessageBox.warning(self, tr("msg.failure"), tr("task.cannot_resume", task_id=task_id))
-    
+
     def _cancel_selected_task(self):
         """取消选中的任务"""
         from core.task_queue_manager import get_task_queue_manager, TaskStatus
-        
+
         task_id = self._get_selected_task_id()
         if not task_id:
             QMessageBox.warning(self, tr("msg.hint"), tr("task.select_task_first"))
             return
-        
+
         reply = QMessageBox.question(
             self, tr("msg.confirm"), tr("task.confirm_cancel", task_id=task_id),
             QMessageBox.Yes | QMessageBox.No, QMessageBox.No
         )
         if reply == QMessageBox.Yes:
             queue = get_task_queue_manager()
-            
+
             # 如果是当前正在运行的外部扫描任务，使用主窗口的停止方法
             if hasattr(self, 'current_task_id') and task_id == self.current_task_id:
                 if hasattr(self, 'scan_thread') and self.scan_thread and self.scan_thread.isRunning():
@@ -2427,23 +2560,23 @@ class MainWindow(QMainWindow):
                     QMessageBox.information(self, tr("msg.success"), tr("task.cancelled", task_id=task_id))
                     self._refresh_task_list()
                     return
-            
+
             # 尝试通过队列管理器取消（队列内部任务或等待中的任务）
             if queue.cancel_task(task_id):
                 QMessageBox.information(self, tr("msg.success"), tr("task.cancelled", task_id=task_id))
                 self._refresh_task_list()
             else:
                 QMessageBox.warning(self, tr("msg.failure"), tr("task.cannot_cancel", task_id=task_id))
-    
+
     def _delete_selected_task(self):
         """删除选中的任务"""
         from core.task_queue_manager import get_task_queue_manager
-        
+
         task_id = self._get_selected_task_id()
         if not task_id:
             QMessageBox.warning(self, tr("msg.hint"), tr("task.select_task_first"))
             return
-        
+
         reply = QMessageBox.question(
             self, tr("msg.confirm"), tr("task.confirm_delete", task_id=task_id),
             QMessageBox.Yes | QMessageBox.No, QMessageBox.No
@@ -2455,11 +2588,11 @@ class MainWindow(QMainWindow):
                 self._refresh_task_list()
             else:
                 QMessageBox.warning(self, tr("msg.failure"), tr("task.cannot_delete", task_id=task_id))
-    
+
     def _clear_completed_tasks(self):
         """清理所有已完成的任务"""
         from core.task_queue_manager import get_task_queue_manager
-        
+
         reply = QMessageBox.question(
             self, tr("msg.confirm"), tr("task.confirm_clear_completed"),
             QMessageBox.Yes | QMessageBox.No, QMessageBox.No
@@ -2469,7 +2602,7 @@ class MainWindow(QMainWindow):
             queue.clear_completed()
             self._refresh_task_list()
             QMessageBox.information(self, tr("msg.success"), tr("task.completed_cleared"))
-    
+
     def _create_fortress_button(self, text, btn_type='primary'):
         """创建 FORTRESS 风格按钮（支持 DPI 缩放）"""
         btn = QPushButton(text)
@@ -2569,9 +2702,9 @@ class MainWindow(QMainWindow):
                     background-color: {hover_bg};
                 }}
             """))
-        
+
         return btn
-    
+
     def _create_scan_stat_card(self, title, value, color):
         """创建扫描统计卡片（支持 DPI 缩放）"""
         card = QWidget()
@@ -2611,7 +2744,7 @@ class MainWindow(QMainWindow):
         card.value_label = value_label
 
         return card
-    
+
     def _empty_severity_counts(self):
         return {'critical': 0, 'high': 0, 'medium': 0, 'low': 0, 'info': 0}
 
@@ -2683,23 +2816,23 @@ class MainWindow(QMainWindow):
     def show_new_scan_dialog(self):
         """显示新建扫描配置弹窗"""
         from dialogs.new_scan_dialog import NewScanDialog
-        
+
         # 使用队列中的 POC 作为初始选中项
         initial_pocs = list(self.pending_scan_pocs)
         dialog = NewScanDialog(self, self.poc_library, initial_pocs=initial_pocs, colors=FORTRESS_COLORS)
-        
+
         if dialog.exec_() == QDialog.Accepted:
             # 获取配置
             targets = dedupe_targets(dialog.get_targets())
             pocs = dialog.get_selected_pocs()
             action_mode = dialog.get_action_mode()
-            
+
             print(f"[DEBUG] action_mode = '{action_mode}'")  # 调试输出
-            
+
             if targets and pocs:
                 self.txt_targets.setPlainText("\n".join(targets))
                 self._set_selected_pocs(pocs)
-                
+
                 if action_mode == 'queue':
                     # 加入任务队列（不自动启动）
                     self._add_task_to_queue(targets, pocs)
@@ -2708,10 +2841,10 @@ class MainWindow(QMainWindow):
                     # 立即扫描 (action_mode == 'scan')
                     self._switch_page(0)
                     self.start_scan(targets=targets, templates=pocs)
-                
+
                 # 清空待选队列
                 self.pending_scan_pocs.clear()
-    
+
     def _add_task_to_queue(self, targets, pocs, priority=None):
         """添加任务到扫描队列"""
         from core.task_queue_manager import get_task_queue_manager, TaskPriority
@@ -2751,7 +2884,7 @@ class MainWindow(QMainWindow):
             tr("task.added_to_queue"),
             tr("task.added_to_queue_detail", task_id=task_id, targets=len(targets), pocs=len(pocs))
         )
-    
+
     def _set_selected_pocs(self, poc_paths):
         """Set selected POCs in the hidden scan table."""
         self._ensure_scan_poc_table_ready()
@@ -2774,24 +2907,24 @@ class MainWindow(QMainWindow):
                     break
 
     # ================= FOFA 内嵌页面操作 =================
-    
+
     def _fofa_refresh_history(self):
         """刷新 FOFA 历史记录列表"""
         if not hasattr(self, 'fofa_history_list'):
             return
         self.fofa_history_list.clear()
         histories = self.fofa_history_manager.get_fofa_history(limit=30)
-        
+
         for h in histories:
             query = h.get('query', '')
             count = h.get('result_count', 0)
             time_str = h.get('search_time', '')[:16]
-            
+
             item = QListWidgetItem(f"[{count}] {query[:30]}...")
             item.setToolTip(tr("fofa.history_tooltip", time=time_str, count=count, query=query))
             item.setData(Qt.UserRole, h)
             self.fofa_history_list.addItem(item)
-    
+
     def _fofa_load_history_item(self, item):
         """双击加载 FOFA 历史记录"""
         history = item.data(Qt.UserRole)
@@ -2803,7 +2936,7 @@ class MainWindow(QMainWindow):
                 if results:
                     self._fofa_display_results(results)
                     self.fofa_status_label.setText(tr("fofa.history_loaded", count=len(results)))
-    
+
     def _fofa_load_selected_history(self):
         """加载选中的历史记录"""
         item = self.fofa_history_list.currentItem()
@@ -2811,7 +2944,7 @@ class MainWindow(QMainWindow):
             self._fofa_load_history_item(item)
         else:
             QMessageBox.information(self, tr("msg.hint"), tr("fofa.select_history_first"))
-    
+
     def _fofa_clear_history(self):
         """清空 FOFA 历史记录"""
         reply = QMessageBox.question(
@@ -2821,32 +2954,32 @@ class MainWindow(QMainWindow):
         if reply == QMessageBox.Yes:
             self.fofa_history_manager.clear_fofa_history()
             self._fofa_refresh_history()
-    
+
     def _fofa_do_search(self):
         """执行 FOFA 搜索"""
         from core.fofa_client import FofaSearchThread
-        
+
         query = self.fofa_query_input.text().strip()
         if not query:
             QMessageBox.warning(self, tr("msg.hint"), tr("fofa.enter_query"))
             return
-        
+
         fofa_config = self.settings.get_fofa_config()
         if not fofa_config.get("api_key"):
             QMessageBox.warning(self, tr("msg.hint"), tr("fofa.configure_api_first"))
             self._switch_page(5)  # 切换到设置页
             return
-        
+
         try:
             size = int(self.fofa_size_combo.currentText())
         except ValueError:
             size = 100
-        
+
         self.fofa_btn_search.setEnabled(False)
         self.fofa_btn_search.setText(tr("fofa.searching"))
         self.fofa_progress.show()
         self.fofa_status_label.setText(tr("fofa.searching_with_size", size=size))
-        
+
         self.fofa_search_thread = FofaSearchThread(
             fofa_config.get("api_url", ""),
             fofa_config.get("email", ""),
@@ -2856,7 +2989,7 @@ class MainWindow(QMainWindow):
         self.fofa_search_thread.result_signal.connect(self._fofa_on_search_result)
         self.fofa_search_thread.error_signal.connect(self._fofa_on_search_error)
         self.fofa_search_thread.start()
-    
+
     def _fofa_on_search_result(self, results):
         """FOFA 搜索完成"""
         self.fofa_btn_search.setEnabled(True)
@@ -2872,7 +3005,7 @@ class MainWindow(QMainWindow):
 
         self.fofa_status_label.setText(tr("fofa.search_complete", count=len(results)))
         self.fofa_count_label.setText(tr("fofa.result_count", count=len(results)))
-    
+
     def _fofa_on_search_error(self, error):
         """FOFA 搜索出错"""
         self.fofa_btn_search.setEnabled(True)
@@ -2880,44 +3013,44 @@ class MainWindow(QMainWindow):
         self.fofa_progress.hide()
         self.fofa_status_label.setText(tr("fofa.search_failed", error=error))
         QMessageBox.critical(self, tr("msg.error"), error)
-    
+
     def _fofa_display_results(self, results):
         """显示 FOFA 搜索结果"""
         self.fofa_result_table.setUpdatesEnabled(False)
         self.fofa_result_table.setRowCount(0)
         self.fofa_result_table.setRowCount(len(results))
-        
+
         for row, item in enumerate(results):
             chk_item = QTableWidgetItem()
             chk_item.setFlags(Qt.ItemIsUserCheckable | Qt.ItemIsEnabled)
             chk_item.setCheckState(Qt.Checked)
-            
+
             host = item.get("host", "")
             chk_item.setData(Qt.UserRole, host)
-            
+
             self.fofa_result_table.setItem(row, 0, chk_item)
             self.fofa_result_table.setItem(row, 1, QTableWidgetItem(host))
             self.fofa_result_table.setItem(row, 2, QTableWidgetItem(item.get("ip", "")))
             self.fofa_result_table.setItem(row, 3, QTableWidgetItem(str(item.get("port", ""))))
             self.fofa_result_table.setItem(row, 4, QTableWidgetItem(item.get("title", "")))
-        
+
         self.fofa_result_table.setUpdatesEnabled(True)
         self.fofa_count_label.setText(tr("fofa.result_count", count=len(results)))
-    
+
     def _fofa_select_all(self):
         """FOFA 全选"""
         for i in range(self.fofa_result_table.rowCount()):
             item = self.fofa_result_table.item(i, 0)
             if item:
                 item.setCheckState(Qt.Checked)
-    
+
     def _fofa_deselect_all(self):
         """FOFA 取消全选"""
         for i in range(self.fofa_result_table.rowCount()):
             item = self.fofa_result_table.item(i, 0)
             if item:
                 item.setCheckState(Qt.Unchecked)
-    
+
     def _fofa_import_selected(self):
         """导入 FOFA 选中目标到扫描"""
         targets = []
@@ -2928,30 +3061,30 @@ class MainWindow(QMainWindow):
                 if target:
                     targets.append(target)
         targets = dedupe_targets(targets)
-        
+
         if not targets:
             QMessageBox.warning(self, tr("msg.hint"), tr("fofa.select_at_least_one"))
             return
-        
+
         # 打开新建扫描弹窗并预填充目标
         from dialogs.new_scan_dialog import NewScanDialog
-        
+
         # 使用队列中的 POC 作为初始选中项
         initial_pocs = list(self.pending_scan_pocs)
         dialog = NewScanDialog(self, self.poc_library, initial_pocs=initial_pocs, colors=FORTRESS_COLORS)
         dialog.txt_targets.setPlainText("\n".join(targets))
-        
+
         if dialog.exec_() == QDialog.Accepted:
             # 获取配置并开始扫描
             # 获取配置
             final_targets = dedupe_targets(dialog.get_targets())
             pocs = dialog.get_selected_pocs()
             action_mode = dialog.get_action_mode()
-            
+
             if final_targets and pocs:
                 self.txt_targets.setPlainText("\n".join(final_targets))
                 self._set_selected_pocs(pocs)
-                
+
                 if action_mode == 'queue':
                     # 加入任务队列（不自动启动）
                     self._add_task_to_queue(final_targets, pocs)
@@ -2961,12 +3094,12 @@ class MainWindow(QMainWindow):
                     self._switch_page(0)  # 切换到扫描结果页
                     # 直接传递参数，避免 UI 同步失败导致无法扫描
                     self.start_scan(targets=final_targets, templates=pocs)
-                
+
                 # 开始扫描/加入队列后，清空待选队列
                 self.pending_scan_pocs.clear()
-    
+
     # ================= AI 内嵌页面操作 =================
-    
+
     def _load_ai_presets_to_combo(self):
         """加载 AI 预设到下拉框"""
         if not hasattr(self, 'ai_preset_combo'):
@@ -2975,7 +3108,7 @@ class MainWindow(QMainWindow):
         presets = self.settings.get_ai_presets()
         for preset in presets:
             self.ai_preset_combo.addItem(preset.get("name", tr("settings.unnamed")), preset)
-    
+
     def _load_ai_presets_to_settings_combo(self):
         """加载 AI 预设到设置页下拉框"""
         if not hasattr(self, 'settings_ai_preset'):
@@ -2986,7 +3119,7 @@ class MainWindow(QMainWindow):
         for preset in presets:
             self.settings_ai_preset.addItem(preset.get("name", tr("settings.unnamed")), preset)
         self.settings_ai_preset.blockSignals(False)
-    
+
     def _on_ai_preset_changed(self, index):
         """当AI预设下拉框选择改变时，更新表单"""
         if index < 0 or not hasattr(self, 'settings_ai_url'):
@@ -2998,12 +3131,12 @@ class MainWindow(QMainWindow):
             self.settings_ai_url.setText(preset.get("api_url", ""))
             self.settings_ai_key.setText(preset.get("api_key", ""))
             self.settings_ai_model.setCurrentText(preset.get("model", ""))
-    
+
     def _add_ai_preset(self):
         """添加新的AI预设"""
         from PyQt5.QtWidgets import QDialog, QVBoxLayout, QLabel, QLineEdit, QHBoxLayout
         from core.fortress_style import apply_fortress_style
-        
+
         # 自定义弹窗以适配主题
         dialog = QDialog(self)
         dialog.setWindowTitle(tr("settings.add_preset"))
@@ -3044,11 +3177,11 @@ class MainWindow(QMainWindow):
             }}
         """))
         layout.addWidget(name_input)
-        
+
         # 按钮
         btn_layout = QHBoxLayout()
         btn_layout.addStretch()
-        
+
         btn_cancel = self._create_fortress_button(tr("common.cancel"), "warning")
         btn_cancel.clicked.connect(dialog.reject)
         btn_layout.addWidget(btn_cancel)
@@ -3056,22 +3189,22 @@ class MainWindow(QMainWindow):
         btn_ok = self._create_fortress_button(tr("common.confirm"), "primary")
         btn_ok.clicked.connect(dialog.accept)
         btn_layout.addWidget(btn_ok)
-        
+
         layout.addLayout(btn_layout)
-        
+
         # 显示弹窗
         if dialog.exec_() == QDialog.Accepted:
             name = name_input.text().strip()
             if name:
                 # 获取当前预设列表
                 presets = self.settings.get_ai_presets()
-                
+
                 # 检查是否重名
                 for preset in presets:
                     if preset.get("name") == name:
                         QMessageBox.warning(self, tr("msg.hint"), tr("settings.preset_exists", name=name))
                         return
-                
+
                 # 创建新预设
                 new_preset = {
                     "name": name,
@@ -3080,56 +3213,56 @@ class MainWindow(QMainWindow):
                     "api_key": ""
                 }
                 presets.append(new_preset)
-                
+
                 # 保存并刷新
                 self.settings.save_ai_presets(presets)
                 self._load_ai_presets_to_settings_combo()
-                
+
                 # 选中新添加的预设
                 self.settings_ai_preset.setCurrentIndex(len(presets) - 1)
-                
+
                 # 同时刷新AI页的预设下拉框
                 self._load_ai_presets_to_combo()
-                
+
                 QMessageBox.information(self, tr("msg.success"), tr("settings.preset_added", name=name))
-    
+
     def _delete_ai_preset(self):
         """删除当前选中的AI预设"""
         if not hasattr(self, 'settings_ai_preset'):
             return
-        
+
         current_index = self.settings_ai_preset.currentIndex()
         if current_index < 0:
             QMessageBox.warning(self, tr("msg.hint"), tr("settings.select_preset_to_delete"))
             return
-        
+
         presets = self.settings.get_ai_presets()
         if len(presets) <= 1:
             QMessageBox.warning(self, tr("msg.hint"), tr("settings.keep_at_least_one"))
             return
-        
+
         preset_name = presets[current_index].get("name", tr("settings.unnamed"))
         reply = QMessageBox.question(
             self, tr("msg.confirm"),
             tr("settings.confirm_delete_preset", name=preset_name),
-            QMessageBox.Yes | QMessageBox.No, 
+            QMessageBox.Yes | QMessageBox.No,
             QMessageBox.No
         )
-        
+
         if reply == QMessageBox.Yes:
             del presets[current_index]
             self.settings.save_ai_presets(presets)
-            
+
             # 刷新下拉框
             self._load_ai_presets_to_settings_combo()
-            
+
             # 选中第一个预设
             if self.settings_ai_preset.count() > 0:
                 self.settings_ai_preset.setCurrentIndex(0)
-            
+
             # 同时刷新AI页的预设下拉框
             self._load_ai_presets_to_combo()
-            
+
             QMessageBox.information(self, tr("msg.success"), tr("settings.preset_deleted", name=preset_name))
 
     def _rename_ai_preset(self):
@@ -3264,12 +3397,12 @@ class MainWindow(QMainWindow):
         """更新主题预览区域"""
         if not hasattr(self, 'theme_preview_widget'):
             return
-        
+
         if theme_name is None:
             theme_name = self.settings.get_current_theme()
-        
+
         colors = get_theme_colors(theme_name)
-        
+
         # 设置预览样式
         self.theme_preview_widget.setStyleSheet(scaled_style(f"""
             QWidget {{
@@ -3343,11 +3476,11 @@ class MainWindow(QMainWindow):
         text_label = QLabel(tr("settings.preview_secondary_text"))
         text_label.setStyleSheet(f"color: {colors['text_secondary']}; border: none;")
         layout.addWidget(text_label)
-    
+
     def _on_theme_preview_changed(self, theme_name):
         """当主题选择改变时更新预览"""
         self._update_theme_preview(theme_name)
-    
+
     def _apply_selected_theme(self):
         """应用选中的主题"""
         if not hasattr(self, 'settings_theme_combo'):
@@ -3411,26 +3544,26 @@ class MainWindow(QMainWindow):
     def _ai_do_task(self, task_type, input_widget, output_widget):
         """执行 AI 任务"""
         from core.ai_client import AIWorkerThreadV2
-        
+
         # 获取输入
         if isinstance(input_widget, QLineEdit):
             user_input = input_widget.text().strip()
         else:
             user_input = input_widget.toPlainText().strip()
-        
+
         if not user_input:
             QMessageBox.warning(self, tr("msg.hint"), tr("ai.enter_content"))
             return
-        
+
         # 获取 AI 配置
         ai_config = self._get_current_ai_config()
         if not ai_config.get("api_key"):
             QMessageBox.warning(self, tr("msg.hint"), tr("ai.configure_api_first"))
             self._switch_page(5)
             return
-        
+
         output_widget.setText(tr("ai.generating"))
-        
+
         try:
             self.ai_worker = AIWorkerThreadV2(
                 ai_config.get("api_url", ""),
@@ -3445,19 +3578,19 @@ class MainWindow(QMainWindow):
         except Exception as e:
             QMessageBox.warning(self, tr("msg.error"), tr("ai.start_failed", error=e))
             output_widget.setText(tr("msg.error_prefix", error=e))
-    
+
     def _ai_on_result(self, result, output_widget, task_type):
         """AI 返回结果"""
         try:
             output_widget.setText(result)
-            
+
             # 保存到历史记录
             if hasattr(self, 'ai_history_manager'):
                 # 只有 FOFA 语法生成才保存输入内容
                 input_text = ""
                 if hasattr(self, 'ai_fofa_input') and task_type == "fofa":
                     input_text = self.ai_fofa_input.text()
-                
+
                 # 如果是漏洞分析，保存输入内容
                 if hasattr(self, 'ai_analyze_input') and task_type == "analyze":
                     input_text = self.ai_analyze_input.toPlainText()
@@ -3469,11 +3602,11 @@ class MainWindow(QMainWindow):
         except Exception as e:
             print(f"Error in _ai_on_result: {e}")
             # 不弹窗，避免由于非关键功能（如历史记录）失败打断用户
-    
+
     def _ai_on_error(self, error, output_widget):
         """AI 返回错误"""
         output_widget.setText(tr("msg.error_prefix", error=error))
-    
+
     def _get_current_ai_config(self):
         """获取当前 AI 配置"""
         presets = self.settings.get_ai_presets()
@@ -3484,7 +3617,7 @@ class MainWindow(QMainWindow):
         if current_index < 0 or current_index >= len(presets):
             current_index = 0
         return presets[current_index]
-    
+
     def _copy_text(self, widget):
         """复制文本框内容"""
         text = widget.toPlainText().strip()
@@ -3492,7 +3625,7 @@ class MainWindow(QMainWindow):
             from PyQt5.QtWidgets import QApplication
             QApplication.clipboard().setText(text)
             QMessageBox.information(self, tr("msg.success"), tr("common.copied_to_clipboard"))
-    
+
     def _ai_copy_fofa_and_open(self):
         """复制 FOFA 语法并跳转到 FOFA 搜索"""
         if hasattr(self, 'ai_fofa_output'):
@@ -3506,14 +3639,14 @@ class MainWindow(QMainWindow):
                 # 尝试提取引号内容
                 matches = re.findall(r'"([^"]+)"', text)
                 query = matches[0] if matches else text[:100]
-            
+
             # 设置到 FOFA 输入框并切换页面
             if hasattr(self, 'fofa_query_input'):
                 self.fofa_query_input.setText(query)
                 self._switch_page(3)  # 切换到 FOFA 搜索页
-    
+
     # ================= 设置内嵌页面操作 =================
-    
+
     def _load_all_settings(self):
         """加载所有设置到内嵌页面"""
         # 扫描参数
@@ -3539,14 +3672,14 @@ class MainWindow(QMainWindow):
                 self.settings_oast_cache.setValue(scan_config.get("oast_cache_size", 5000))
                 self.settings_oast_eviction.setValue(scan_config.get("oast_eviction", 60))
                 self.settings_oast_adapt_legacy.setChecked(scan_config.get("oast_adapt_legacy", True))
-        
+
         # FOFA 配置
         fofa_config = self.settings.get_fofa_config()
         if hasattr(self, 'settings_fofa_url'):
             self.settings_fofa_url.setText(fofa_config.get("api_url", "https://fofa.info/api/v1/search/all"))
             self.settings_fofa_email.setText(fofa_config.get("email", ""))
             self.settings_fofa_key.setText(fofa_config.get("api_key", ""))
-        
+
         # AI 配置 - 恢复保存的预设选择
         if hasattr(self, 'settings_ai_preset') and self.settings_ai_preset.count() > 0:
             saved_index = self.settings.get_current_ai_preset_index()
@@ -3554,11 +3687,21 @@ class MainWindow(QMainWindow):
                 self.settings_ai_preset.setCurrentIndex(saved_index)
             else:
                 self.settings_ai_preset.setCurrentIndex(0)
-            
+
             # 触发表单更新
             self._on_ai_preset_changed(self.settings_ai_preset.currentIndex())
 
-    
+        # 通用代理配置
+        proxy_config = self.settings.get_general_proxy_config()
+        if hasattr(self, 'settings_proxy_enable'):
+            self.settings_proxy_enable.setChecked(proxy_config.get("enabled", False))
+            type_index = self.settings_proxy_type.findData(proxy_config.get("type", "http"))
+            self.settings_proxy_type.setCurrentIndex(type_index if type_index >= 0 else 0)
+            self.settings_proxy_server.setText(proxy_config.get("server", ""))
+            self.settings_proxy_username.setText(proxy_config.get("username", ""))
+            self.settings_proxy_password.setText(proxy_config.get("password", ""))
+
+
     def _save_all_settings(self):
         """保存所有设置"""
         # 保存扫描参数
@@ -3583,7 +3726,7 @@ class MainWindow(QMainWindow):
                 "oast_eviction": self.settings_oast_eviction.value() if hasattr(self, 'settings_oast_eviction') else 60,
                 "oast_adapt_legacy": self.settings_oast_adapt_legacy.isChecked() if hasattr(self, 'settings_oast_adapt_legacy') else True,
             })
-        
+
         # 保存 FOFA 配置
         if hasattr(self, 'settings_fofa_url'):
             self.settings.save_fofa_config({
@@ -3591,7 +3734,7 @@ class MainWindow(QMainWindow):
                 "email": self.settings_fofa_email.text().strip(),
                 "api_key": self.settings_fofa_key.text().strip(),
             })
-        
+
         # 保存 AI 配置 - 更新当前选中的预设
         if hasattr(self, 'settings_ai_preset') and self.settings_ai_preset.count() > 0:
             current_index = self.settings_ai_preset.currentIndex()
@@ -3619,6 +3762,25 @@ class MainWindow(QMainWindow):
         # 保存更新设置
         if hasattr(self, 'auto_update_checkbox'):
             self.settings.set_auto_check_update(self.auto_update_checkbox.isChecked())
+
+        # 保存通用代理配置
+        if hasattr(self, 'settings_proxy_enable'):
+            self.settings.save_general_proxy_config({
+                "enabled": self.settings_proxy_enable.isChecked(),
+                "type": self.settings_proxy_type.currentData(),
+                "server": self.settings_proxy_server.text().strip(),
+                "username": self.settings_proxy_username.text().strip(),
+                "password": self.settings_proxy_password.text().strip()
+            })
+            # 立即应用代理设置到全局
+            from core.proxy_manager import set_proxy_config
+            set_proxy_config(
+                enabled=self.settings_proxy_enable.isChecked(),
+                proxy_type=self.settings_proxy_type.currentData(),
+                server=self.settings_proxy_server.text().strip(),
+                username=self.settings_proxy_username.text().strip(),
+                password=self.settings_proxy_password.text().strip()
+            )
 
         QMessageBox.information(self, tr("msg.success"), tr("settings.settings_saved"))
 
@@ -3766,19 +3928,19 @@ class MainWindow(QMainWindow):
         msg_box.button(QMessageBox.No).setText(tr("common.no"))
         return msg_box.exec_()
 
-    
+
     def _test_fofa_connection(self):
         """测试 FOFA API 连接"""
         from core.fofa_client import FofaSearchThread
-        
+
         api_url = self.settings_fofa_url.text().strip() if hasattr(self, 'settings_fofa_url') else ""
         email = self.settings_fofa_email.text().strip() if hasattr(self, 'settings_fofa_email') else ""
         api_key = self.settings_fofa_key.text().strip() if hasattr(self, 'settings_fofa_key') else ""
-        
+
         if not api_key:
             QMessageBox.warning(self, tr("msg.hint"), tr("fofa.fill_api_key"))
             return
-        
+
         # 简单测试
         try:
             self.fofa_test_thread = FofaSearchThread(api_url, email, api_key, 'port="80"', 1)
@@ -3804,7 +3966,7 @@ class MainWindow(QMainWindow):
     def show_settings_dialog(self):
         """显示设置弹窗（别名方法）"""
         self.open_settings_dialog()
-    
+
     def open_fofa_dialog(self, query=None):
         """打开 FOFA 搜索弹窗"""
         dialog = FofaDialog(self, query)
@@ -3815,15 +3977,15 @@ class MainWindow(QMainWindow):
                 new_targets = "\n".join(targets)
                 self.txt_targets.setPlainText(new_targets)  # 替换而不是追加
                 QMessageBox.information(self, tr("msg.success"), tr("fofa.imported_targets", count=len(targets)))
-    
+
     def _check_nuclei_status(self):
         """检测 Nuclei 状态"""
         try:
             from core.nuclei_runner import get_nuclei_path
             import os
-            
+
             nuclei_path = get_nuclei_path()
-            
+
             if os.path.exists(nuclei_path):
                 self.nuclei_status_label.setText(tr("nuclei.status_installed"))
                 self.nuclei_status_label.setStyleSheet(f"color: {FORTRESS_COLORS['btn_success']}; font-weight: bold;")
@@ -3836,7 +3998,7 @@ class MainWindow(QMainWindow):
         except Exception as e:
             self.nuclei_status_label.setText(tr("nuclei.detect_failed", error=str(e)))
             self.nuclei_status_label.setStyleSheet(f"color: {FORTRESS_COLORS['status_critical']}; font-weight: bold;")
-    
+
     def _download_nuclei(self):
         """下载 Nuclei"""
         try:
@@ -3845,12 +4007,12 @@ class MainWindow(QMainWindow):
             import os
             from PyQt5.QtCore import QThread, pyqtSignal
             from PyQt5.QtWidgets import QMessageBox
-            
+
             # 创建下载线程
             class NucleiDownloadThread(QThread):
                 progress_signal = pyqtSignal(str)
                 finished_signal = pyqtSignal(bool, str)
-                
+
                 def run(self):
                     try:
                         self.progress_signal.emit(tr("nuclei.downloading"))
@@ -3863,29 +4025,29 @@ class MainWindow(QMainWindow):
                             self.finished_signal.emit(True, tr("nuclei.download_complete"))
                         else:
                             self.finished_signal.emit(False, tr("nuclei.download_failed"))
-                            
+
                     except Exception as e:
                         self.finished_signal.emit(False, tr("nuclei.download_error", error=str(e)))
-            
+
             # 禁用按钮并启动下载
             self.download_nuclei_btn.setEnabled(False)
             self.nuclei_progress_label.setText(tr("nuclei.preparing_download"))
-            
+
             self.nuclei_download_thread = NucleiDownloadThread()
             self.nuclei_download_thread.progress_signal.connect(self.nuclei_progress_label.setText)
             self.nuclei_download_thread.finished_signal.connect(self._on_nuclei_download_finished)
             self.nuclei_download_thread.start()
-            
+
         except Exception as e:
             from PyQt5.QtWidgets import QMessageBox
             QMessageBox.critical(self, tr("msg.error"), tr("nuclei.start_download_failed", error=str(e)))
             self.download_nuclei_btn.setEnabled(True)
-    
+
     def _on_nuclei_download_finished(self, success, message):
         """Nuclei 下载完成回调"""
         from PyQt5.QtWidgets import QMessageBox
         self.download_nuclei_btn.setEnabled(True)
-        
+
         if success:
             QMessageBox.information(self, tr("msg.success"), message)
             self.nuclei_progress_label.setText(tr("nuclei.download_done"))
@@ -3893,7 +4055,7 @@ class MainWindow(QMainWindow):
         else:
             QMessageBox.critical(self, tr("msg.failure"), message)
             self.nuclei_progress_label.setText(tr("nuclei.download_failed_status"))
-    
+
     def open_ai_dialog(self):
         """打开 AI 助手弹窗"""
         dialog = AIAssistantDialog(self)
@@ -3903,39 +4065,39 @@ class MainWindow(QMainWindow):
     def setup_dashboard_tab(self):
         layout = QVBoxLayout(self.dashboard_tab)
         layout.setSpacing(scaled(10))
-        
+
         # 统计数据
         from core.scan_history import get_scan_history
         stats = get_scan_history().get_statistics()
-        
+
         # ===== 顶部统计卡片（紧凑型）=====
         cards_layout = QHBoxLayout()
         cards_layout.setSpacing(scaled(10))
-        
+
         poc_count = self.poc_library.get_poc_count() if hasattr(self, 'poc_library') else 0
-        
+
         self.card_scans = self._create_mini_card(tr("dashboard.scan_count"), str(stats.get('total_scans', 0)), "#3498db")
         self.card_vulns = self._create_mini_card(tr("dashboard.vuln_found"), str(stats.get('total_vulns', 0)), "#e74c3c")
         self.card_pocs = self._create_mini_card(tr("dashboard.poc_count"), str(poc_count), "#27ae60")
         self.card_critical = self._create_mini_card(tr("dashboard.critical_vulns"), str(stats.get('severity_distribution', {}).get('critical', 0)), "#9b59b6")
         self.card_high = self._create_mini_card(tr("dashboard.high_vulns"), str(stats.get('severity_distribution', {}).get('high', 0)), "#e67e22")
-        
+
         cards_layout.addWidget(self.card_scans)
         cards_layout.addWidget(self.card_vulns)
         cards_layout.addWidget(self.card_pocs)
         cards_layout.addWidget(self.card_critical)
         cards_layout.addWidget(self.card_high)
-        
+
         layout.addLayout(cards_layout)
-        
+
         # ===== 主内容区：左中右三栏 =====
         content_splitter = QSplitter(Qt.Horizontal)
-        
+
         # 左栏：漏洞分布
         left_panel = QGroupBox(tr("dashboard.vuln_distribution"))
         left_layout = QVBoxLayout()
         left_layout.setSpacing(scaled(5))
-        
+
         # 保存漏洞分布条形图的引用，以便后续刷新时更新
         self.severity_bars = {}
         severity_dist = stats.get('severity_distribution', {})
@@ -3945,40 +4107,40 @@ class MainWindow(QMainWindow):
             bar_widget, bar = self._create_severity_bar(label, severity_dist.get(sev, 0), color)
             self.severity_bars[sev] = bar  # 保存 QProgressBar 引用
             left_layout.addWidget(bar_widget)
-        
+
         left_layout.addStretch()
-        
+
         # TOP 漏洞模板
         top_group = QLabel(tr("dashboard.top_templates"))
         top_group.setStyleSheet(scaled_style("font-weight: bold; margin-top: 10px;"))
         left_layout.addWidget(top_group)
-        
+
         for tpl in stats.get('top_templates', [])[:5]:
             tpl_label = QLabel(f"• {tpl['template'][:30]}... ({tpl['count']})")
             tpl_label.setStyleSheet(scaled_style("color: #7f8c8d; font-size: 11px;"))
             left_layout.addWidget(tpl_label)
-        
+
         if not stats.get('top_templates'):
             left_layout.addWidget(QLabel(tr("dashboard.no_data")))
-        
+
         left_panel.setLayout(left_layout)
         content_splitter.addWidget(left_panel)
-        
+
         # 中栏：扫描历史
         center_panel = QGroupBox(tr("dashboard.scan_history"))
         center_layout = QVBoxLayout()
-        
+
         self.history_table = QTableWidget()
         # 应用 FORTRESS 表格样式（美化表头和序号）
         from core.fortress_style import get_table_stylesheet
         self.history_table.setStyleSheet(get_table_stylesheet(FORTRESS_COLORS))
-        
+
         self.history_table.setColumnCount(7)
         self.history_table.setHorizontalHeaderLabels([tr("history.time"), tr("history.target"), tr("history.poc"), tr("history.vuln"), tr("history.status"), tr("common.detail"), tr("common.export")])
         self.history_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
         for i in range(1, 5):
             self.history_table.horizontalHeader().setSectionResizeMode(i, QHeaderView.ResizeToContents)
-            
+
         # 详情和导出列：设置固定宽度以适配按钮
         for i in [5, 6]:
             self.history_table.horizontalHeader().setSectionResizeMode(i, QHeaderView.Fixed)
@@ -3991,7 +4153,7 @@ class MainWindow(QMainWindow):
         # 移除高度限制，让表格自动填充可用空间
         self.history_table.setMinimumHeight(scaled(200))
         center_layout.addWidget(self.history_table, 1)  # stretch factor = 1，让表格优先获取空间
-        
+
         btn_row = QHBoxLayout()
         btn_refresh = self._create_fortress_button(tr("common.refresh"), "info")
         btn_refresh.clicked.connect(self.refresh_dashboard)
@@ -4000,16 +4162,16 @@ class MainWindow(QMainWindow):
         btn_clear = self._create_fortress_button(tr("dashboard.clear"), "warning")
         btn_clear.clicked.connect(self.clear_scan_history)
         btn_row.addWidget(btn_clear)
-        
+
         # 查看全部按钮
         btn_view_all = self._create_fortress_button(tr("dashboard.view_all"), "primary")
         btn_view_all.setToolTip(tr("dashboard.view_all_tooltip"))
         btn_view_all.clicked.connect(self.open_all_scan_history_dialog)
         btn_row.addWidget(btn_view_all)
-        
+
         btn_row.addStretch()
         center_layout.addLayout(btn_row)
-        
+
         center_panel.setLayout(center_layout)
         content_splitter.addWidget(center_panel)
 
@@ -4044,21 +4206,21 @@ class MainWindow(QMainWindow):
         today_label = QLabel(tr("dashboard.today_stats"))
         today_label.setStyleSheet(scaled_style("font-weight: bold; margin-top: 15px;"))
         right_layout.addWidget(today_label)
-        
+
         trend = stats.get('trend_7days', [])
         today_scans = trend[-1]['scans'] if trend else 0
         today_vulns = trend[-1]['vulns'] if trend else 0
         right_layout.addWidget(QLabel(tr("dashboard.today_scans", count=today_scans)))
         right_layout.addWidget(QLabel(tr("dashboard.today_vulns", count=today_vulns)))
-        
+
         right_panel.setLayout(right_layout)
         content_splitter.addWidget(right_panel)
-        
+
         content_splitter.setSizes([250, 450, 200])
         layout.addWidget(content_splitter)
-        
+
         self.refresh_dashboard()
-    
+
     def _create_mini_card(self, title, value, color):
         """创建紧凑型统计卡片（支持 DPI 缩放）"""
         card = QFrame()
@@ -4114,24 +4276,24 @@ class MainWindow(QMainWindow):
         layout.addWidget(bar)
 
         return widget, bar  # 同时返回容器和进度条
-    
+
     def refresh_dashboard(self):
         """刷新仪表盘数据"""
         from core.scan_history import get_scan_history
-        
+
         history_mgr = get_scan_history()
-        
+
         # 刷新统计卡片数据
         stats = history_mgr.get_statistics()
         poc_count = self.poc_library.get_poc_count() if hasattr(self, 'poc_library') else 0
-        
+
         # 更新卡片值 - 找到卡片内的值标签并更新
         self._update_card_value(self.card_scans, str(stats.get('total_scans', 0)))
         self._update_card_value(self.card_vulns, str(stats.get('total_vulns', 0)))
         self._update_card_value(self.card_pocs, str(poc_count))
         self._update_card_value(self.card_critical, str(stats.get('severity_distribution', {}).get('critical', 0)))
         self._update_card_value(self.card_high, str(stats.get('severity_distribution', {}).get('high', 0)))
-        
+
         # 更新漏洞分布条形图
         if hasattr(self, 'severity_bars'):
             severity_dist = stats.get('severity_distribution', {})
@@ -4140,31 +4302,31 @@ class MainWindow(QMainWindow):
                 bar.setRange(0, max(count, 10))
                 bar.setValue(count)
                 bar.setFormat(f"{count}")
-        
 
-        
+
+
         # 刷新表格样式以适应可能的主题变化
         from core.fortress_style import get_table_stylesheet
         self.history_table.setStyleSheet(get_table_stylesheet(FORTRESS_COLORS))
 
         # 刷新历史表格
         history = history_mgr.get_recent_scans(20)
-        
+
         self.history_table.setUpdatesEnabled(False)
         self.history_table.setRowCount(0)
         self.history_table.setRowCount(len(history))
-        
+
         for row, record in enumerate(history):
             # 时间
             scan_time = record.get('scan_time', '')[:19]  # 截取日期时间
             self.history_table.setItem(row, 0, QTableWidgetItem(scan_time))
-            
+
             # Targets
             self.history_table.setItem(row, 1, QTableWidgetItem(str(record.get('target_count', 0))))
-            
+
             # POC 数
             self.history_table.setItem(row, 2, QTableWidgetItem(str(record.get('poc_count', 0))))
-            
+
             # Vulns
             vuln_count = record.get('vuln_count', 0)
             vuln_item = QTableWidgetItem(str(vuln_count))
@@ -4172,7 +4334,7 @@ class MainWindow(QMainWindow):
                 vuln_item.setForeground(QColor('#e74c3c'))
                 vuln_item.setFont(QFont("Arial", scaled(10), QFont.Bold))
             self.history_table.setItem(row, 3, vuln_item)
-            
+
             # 状态
             status = record.get('status', 'completed')
             status_item = QTableWidgetItem(display_scan_status(status))
@@ -4181,7 +4343,7 @@ class MainWindow(QMainWindow):
             else:
                 status_item.setForeground(QColor('#27ae60'))
             self.history_table.setItem(row, 4, status_item)
-            
+
             # 查看详情按钮
             btn_detail = QPushButton(tr("common.detail"))
             btn_detail.setCursor(Qt.PointingHandCursor)
@@ -4192,7 +4354,7 @@ class MainWindow(QMainWindow):
                     color: white;
                     border: none;
                     border-radius: 4px;
-                    font-family: "Microsoft YaHei", sans-serif;
+                    font-family: sans-serif;
                     font-size: 12px;
                     font-weight: normal;
                     padding: 0px;
@@ -4223,7 +4385,7 @@ class MainWindow(QMainWindow):
                     color: white;
                     border: none;
                     border-radius: 4px;
-                    font-family: "Microsoft YaHei", sans-serif;
+                    font-family: sans-serif;
                     font-size: 12px;
                     font-weight: normal;
                     padding: 0px;
@@ -4244,9 +4406,9 @@ class MainWindow(QMainWindow):
             l_export.setContentsMargins(scaled(2), scaled(2), scaled(2), scaled(2))
             l_export.addWidget(btn_export)
             self.history_table.setCellWidget(row, 6, w_export)
-        
+
         self.history_table.setUpdatesEnabled(True)
-    
+
     def _update_card_value(self, card, value):
         """更新统计卡片的值"""
         # 卡片布局中第二个 widget 是值标签
@@ -4255,48 +4417,48 @@ class MainWindow(QMainWindow):
             value_label = layout.itemAt(1).widget()
             if value_label:
                 value_label.setText(value)
-    
+
     def open_all_scan_history_dialog(self):
         """打开全部扫描历史弹窗"""
         from dialogs.all_scan_history_dialog import AllScanHistoryDialog
         dialog = AllScanHistoryDialog(self, colors=FORTRESS_COLORS)
         dialog.exec_()
-    
+
     def show_scan_detail(self, scan_id):
         """显示扫描详情"""
         from core.scan_history import get_scan_history
         import json  # 需要 json 解析 raw_json
         from core.fortress_style import apply_fortress_style, get_table_stylesheet
-        
+
         vulns = get_scan_history().get_scan_vulns(scan_id)
-        
+
         if not vulns:
             QMessageBox.information(self, tr("history.scan_detail"), tr("history.no_vulns_found"))
             return
-        
+
         # 使用 QDialog + QTableWidget 显示
         dialog = QDialog(self)
         dialog.setWindowTitle(tr("history.scan_detail"))
         dialog.resize(scaled(1000), scaled(600))  # 稍微加宽以容纳新列
         apply_fortress_style(dialog, FORTRESS_COLORS)
-        
+
         layout = QVBoxLayout(dialog)
-        
+
         # 信息标签
         lbl_info = QLabel(tr("history.vulns_found", count=len(vulns)))
         lbl_info.setStyleSheet(scaled_style(f"font-weight: bold; font-size: 14px; color: {FORTRESS_COLORS['text_primary']};"))
         layout.addWidget(lbl_info)
-        
+
         # 详情列表
         table = QTableWidget()
         table.setStyleSheet(get_table_stylesheet(FORTRESS_COLORS))
         table.setColumnCount(6)  # 增加 Payload 列
         table.setHorizontalHeaderLabels([tr("scan.col_severity"), "POC ID", tr("scan.col_target"), "Payload / Request", tr("scan.col_poc_path"), tr("scan.col_action")])
-        
+
         # 优化表格样式和行高
         table.verticalHeader().setDefaultSectionSize(scaled(45))  # 增加行高，防止按钮被压缩
         table.verticalHeader().setVisible(False)          # 隐藏垂直表头，使界面更整洁且无色差
-        
+
         header = table.horizontalHeader()
         header.setSectionResizeMode(0, QHeaderView.ResizeToContents)
         header.setSectionResizeMode(1, QHeaderView.ResizeToContents)
@@ -4305,11 +4467,11 @@ class MainWindow(QMainWindow):
         header.setSectionResizeMode(4, QHeaderView.ResizeToContents) # POC 路径
         header.setSectionResizeMode(5, QHeaderView.Fixed)
         table.setColumnWidth(5, scaled(140))  # 操作列稍宽
-        
+
         table.setSelectionBehavior(QTableWidget.SelectRows)
         table.setAlternatingRowColors(True)
         table.setRowCount(len(vulns))
-        
+
         from dialogs.poc_editor_dialog import POCEditorDialog
 
         for row, v in enumerate(vulns):
@@ -4320,14 +4482,14 @@ class MainWindow(QMainWindow):
                     raw_data = json.loads(v['raw_json'])
             except:
                 pass
-            
+
             # 解析请求信息 - 兼容 nuclei.exe 和 native_scanner 两种格式
             method = "GET"
             body = ""
             full_request = ""
             curl_command = ""
             response_data = ""
-            
+
             if raw_data:
                 # 优先使用 nuclei.exe 的格式 (request 字段包含Full request)
                 if raw_data.get('request'):
@@ -4347,11 +4509,11 @@ class MainWindow(QMainWindow):
                     # native_scanner 格式
                     method = raw_data.get('request_method', 'GET')
                     body = raw_data.get('request_body', '')
-                
+
                 # 获取其他有用字段
                 curl_command = raw_data.get('curl-command', '')
                 response_data = raw_data.get('response', '')
-            
+
             # 严重程度
             sev = v.get('severity', 'unknown')
             sev_item = QTableWidgetItem(sev)
@@ -4368,13 +4530,13 @@ class MainWindow(QMainWindow):
             elif sev == 'info':
                 sev_item.setForeground(QColor('#1abc9c'))
             table.setItem(row, 0, sev_item)
-            
+
             # POC ID
             table.setItem(row, 1, QTableWidgetItem(v.get('template_id', '')))
-            
+
             # 目标
             table.setItem(row, 2, QTableWidgetItem(v.get('matched_at', '')))
-            
+
             # Payload / 请求
             payload_text = method
             if body:
@@ -4384,7 +4546,7 @@ class MainWindow(QMainWindow):
                     payload_text += f": {clean_body[:50]}..."
                 else:
                     payload_text += f": {clean_body}"
-            
+
             payload_item = QTableWidgetItem(payload_text)
             if full_request or body:
                 payload_item.setToolTip(f"Full request:\n\n{full_request if full_request else body}")
@@ -4396,7 +4558,7 @@ class MainWindow(QMainWindow):
             path_item = QTableWidgetItem(os.path.basename(display_path) if display_path else "") # 只显示文件名，完整路径放 tooltip
             path_item.setToolTip(display_path)
             table.setItem(row, 4, path_item)
-            
+
             # 操作按钮 - 只保留一个详情按钮，POC编辑在详情窗口中
             btn_detail = QPushButton(tr("common.detail"))
             btn_detail.setToolTip(tr("report.detail_tooltip"))
@@ -4414,23 +4576,23 @@ class MainWindow(QMainWindow):
             """))
             btn_detail.clicked.connect(lambda checked, vd=v, rd=raw_data: self._show_vuln_detail(vd, rd))
             table.setCellWidget(row, 5, btn_detail)
-        
+
         layout.addWidget(table)
-        
+
         # 按钮
         btn_row = QHBoxLayout()
         btn_row.addStretch()
-        
+
         btn_copy = self._create_fortress_button(tr("report.copy_all"), "primary")
         btn_copy.clicked.connect(lambda: self._copy_vulns_to_clipboard(vulns))
         btn_row.addWidget(btn_copy)
-        
+
         btn_close = self._create_fortress_button("OK", "warning")
         btn_close.clicked.connect(dialog.accept)
         btn_row.addWidget(btn_close)
-        
+
         layout.addLayout(btn_row)
-        
+
         dialog.exec_()
 
     def _show_payload_detail(self, method, body):
@@ -4438,14 +4600,14 @@ class MainWindow(QMainWindow):
         from PyQt5.QtWidgets import QTextEdit, QSplitter
         from PyQt5.QtGui import QFont
         from core.fortress_style import apply_fortress_style
-        
+
         d = QDialog(self)
         d.setWindowTitle(tr("report.request_detail", method=method))
         d.resize(scaled(700), scaled(500))
         apply_fortress_style(d, FORTRESS_COLORS)
-        
+
         layout = QVBoxLayout(d)
-        
+
         # 标题
         title = QLabel(tr("report.request_payload", method=method))
         title.setStyleSheet(scaled_style(f"font-weight: bold; font-size: 14px; margin-bottom: 10px; color: {FORTRESS_COLORS['text_primary']};"))
@@ -4466,22 +4628,22 @@ class MainWindow(QMainWindow):
             }
         """))
         layout.addWidget(editor)
-        
+
         # 按钮行
         btn_row = QHBoxLayout()
         btn_row.addStretch()
-        
+
         btn_copy = self._create_fortress_button(tr("common.copy"), "primary")
         btn_copy.clicked.connect(lambda: (
             QApplication.clipboard().setText(body),
             QMessageBox.information(d, tr("msg.success"), tr("common.copied_to_clipboard"))
         ))
         btn_row.addWidget(btn_copy)
-        
+
         btn_close = self._create_fortress_button(tr("common.close"), "warning")
         btn_close.clicked.connect(d.accept)
         btn_row.addWidget(btn_close)
-        
+
         layout.addLayout(btn_row)
         d.exec_()
 
@@ -4490,27 +4652,27 @@ class MainWindow(QMainWindow):
         from PyQt5.QtWidgets import QTextEdit
         from PyQt5.QtGui import QFont
         from core.fortress_style import apply_fortress_style
-        
+
         d = QDialog(self)
         d.setWindowTitle(tr("report.vuln_detail", id=vuln_data.get('template_id', 'Unknown')))
         d.resize(scaled(900), scaled(700))
         apply_fortress_style(d, FORTRESS_COLORS)
-        
+
         layout = QVBoxLayout(d)
-        
+
         # 标题
         sev = vuln_data.get('severity', 'unknown')
         title = QLabel(f"🔴 [{sev.upper()}] {vuln_data.get('template_id', 'Unknown')}")
         title.setStyleSheet(scaled_style(f"font-weight: bold; font-size: 16px; margin-bottom: 10px; color: {FORTRESS_COLORS['text_primary']};"))
         layout.addWidget(title)
-        
+
         # 解析请求信息 - 兼容 nuclei.exe 和 native_scanner 两种格式
         method = "GET"
         body = ""
         full_request = ""
         curl_command = ""
         response_data = ""
-        
+
         if raw_data:
             # 优先使用 nuclei.exe 的格式
             if raw_data.get('request'):
@@ -4527,14 +4689,14 @@ class MainWindow(QMainWindow):
             else:
                 method = raw_data.get('request_method', 'GET')
                 body = raw_data.get('request_body', '')
-            
+
             curl_command = raw_data.get('curl-command', '')
             response_data = raw_data.get('response', '')
-        
+
         # === 从 POC 文件解析Full request链 ===
         poc_requests_text = ""
         poc_path = vuln_data.get('template_path') or (raw_data.get('template-path') if raw_data else None)
-        
+
         # 从 matched_at 提取实际的 Hostname
         matched_url = vuln_data.get('matched_at', '')
         actual_hostname = ""
@@ -4552,19 +4714,19 @@ class MainWindow(QMainWindow):
                 actual_base_url = f"{parsed.scheme}://{actual_hostname}"
             except:
                 pass
-        
+
         if poc_path and os.path.exists(poc_path):
             try:
                 import yaml
                 with open(poc_path, 'r', encoding='utf-8') as f:
                     poc_content = yaml.safe_load(f)
-                
+
                 # 解析 http 部分的请求
                 http_section = poc_content.get('http', [])
                 if http_section:
                     request_steps = []
                     step_num = 1
-                    
+
                     for item in http_section:
                         # 检查 raw 请求
                         raw_requests = item.get('raw', [])
@@ -4576,14 +4738,14 @@ class MainWindow(QMainWindow):
                                     req_content = req_content.replace('{{Hostname}}', actual_hostname)
                                     req_content = req_content.replace('{{BaseURL}}', actual_base_url)
                                     req_content = req_content.replace('{{Host}}', actual_hostname)
-                                
+
                                 request_steps.append({
                                     'step': step_num,
                                     'type': 'raw',
                                     'content': req_content
                                 })
                                 step_num += 1
-                        
+
                         # 检查 path/method 形式的请求
                         if item.get('path') or item.get('method'):
                             req_method = item.get('method', 'GET')
@@ -4600,7 +4762,7 @@ class MainWindow(QMainWindow):
                                     if actual_body:
                                         actual_body = actual_body.replace('{{Hostname}}', actual_hostname)
                                         actual_body = actual_body.replace('{{BaseURL}}', actual_base_url)
-                                
+
                                 request_steps.append({
                                     'step': step_num,
                                     'type': 'standard',
@@ -4609,11 +4771,11 @@ class MainWindow(QMainWindow):
                                     'body': actual_body
                                 })
                                 step_num += 1
-                    
+
                     # 生成请求链文本
                     if len(request_steps) > 1:
                         poc_requests_text = f"\n⚠️ This POC contains {len(request_steps)} request steps, execute in order：\n\n"
-                        
+
                         for req in request_steps:
                             poc_requests_text += f"────────── Step {req['step']} ──────────\n"
                             if req['type'] == 'raw':
@@ -4631,7 +4793,7 @@ class MainWindow(QMainWindow):
             except Exception as e:
                 # 解析失败，忽略
                 pass
-        
+
         # 构建详情内容
         detail_content = f"""════════════════════════════════════════════════════════════════
                             Vulnerability Detail
@@ -4648,7 +4810,7 @@ class MainWindow(QMainWindow):
 {poc_path or 'Unknown'}
 
 """
-        
+
         # 如果有多步骤请求链，优先显示
         if poc_requests_text:
             detail_content += f"""════════════════════════════════════════════════════════════════
@@ -4656,7 +4818,7 @@ class MainWindow(QMainWindow):
 ════════════════════════════════════════════════════════════════
 {poc_requests_text}
 """
-        
+
         # 添加 Nuclei 记录的最后一次请求
         detail_content += f"""════════════════════════════════════════════════════════════════
                     Trigger Request (Nuclei recorded)
@@ -4695,7 +4857,7 @@ class MainWindow(QMainWindow):
 3. 可点击"编辑 POC"按钮查看完整 POC 内容
 
 """
-        
+
         # 内容编辑器（只读，但可选择复制）
         editor = QTextEdit()
         editor.setPlainText(detail_content)
@@ -4711,11 +4873,11 @@ class MainWindow(QMainWindow):
             }
         """))
         layout.addWidget(editor)
-        
+
         # 按钮行
         btn_row = QHBoxLayout()
         btn_row.addStretch()
-        
+
         # 复制目标
         btn_copy_url = self._create_fortress_button(tr("report.copy_target"), "primary")
         btn_copy_url.clicked.connect(lambda: (
@@ -4723,7 +4885,7 @@ class MainWindow(QMainWindow):
             QMessageBox.information(d, tr("msg.success"), tr("report.target_copied"))
         ))
         btn_row.addWidget(btn_copy_url)
-        
+
         # 复制 CURL 命令
         if curl_command:
             btn_copy_curl = self._create_fortress_button(tr("report.copy_curl"), "primary")
@@ -4732,7 +4894,7 @@ class MainWindow(QMainWindow):
                 QMessageBox.information(d, tr("msg.success"), tr("report.curl_copied"))
             ))
             btn_row.addWidget(btn_copy_curl)
-        
+
         # 复制Full request
         if full_request:
             btn_copy_req = self._create_fortress_button(tr("report.copy_request"), "primary")
@@ -4741,7 +4903,7 @@ class MainWindow(QMainWindow):
                 QMessageBox.information(d, tr("msg.success"), tr("report.request_copied"))
             ))
             btn_row.addWidget(btn_copy_req)
-        
+
         # 复制全部
         btn_copy_all = self._create_fortress_button(tr("report.copy_all"), "info")
         btn_copy_all.clicked.connect(lambda: (
@@ -4749,7 +4911,7 @@ class MainWindow(QMainWindow):
             QMessageBox.information(d, tr("msg.success"), tr("common.copied_to_clipboard"))
         ))
         btn_row.addWidget(btn_copy_all)
-        
+
         # 编辑 POC
         poc_path = vuln_data.get('template_path') or raw_data.get('template-path')
         if poc_path and os.path.exists(poc_path):
@@ -4757,17 +4919,17 @@ class MainWindow(QMainWindow):
             btn_edit = self._create_fortress_button(tr("report.edit_poc"), "info")
             btn_edit.clicked.connect(lambda: POCEditorDialog(poc_path, d).exec_())
             btn_row.addWidget(btn_edit)
-        
+
         # 生成补天报告
         btn_report = self._create_fortress_button(tr("report.generate_report"), "purple")
         btn_report.setToolTip(tr("report.generate_src_tooltip"))
         btn_report.clicked.connect(lambda: self._open_vuln_report_dialog(vuln_data, poc_path))
         btn_row.addWidget(btn_report)
-        
+
         btn_close = self._create_fortress_button(tr("common.close"), "warning")
         btn_close.clicked.connect(d.accept)
         btn_row.addWidget(btn_close)
-        
+
         layout.addLayout(btn_row)
         d.exec_()
 
@@ -4780,16 +4942,16 @@ class MainWindow(QMainWindow):
             if v.get('template_path'):
                 msg += f"  POC: {v.get('template_path')}\n"
             msg += "\n"
-        
+
         QApplication.clipboard().setText(msg)
         QMessageBox.information(self, tr("msg.success"), tr("common.copied_to_clipboard"))
-    
+
     def _open_vuln_report_dialog(self, vuln_data, poc_path=None):
         """打开漏洞报告生成对话框"""
         from dialogs.vuln_report_dialog import VulnReportDialog
         dialog = VulnReportDialog(vuln_data, poc_path, self)
         dialog.exec_()
-    
+
     def clear_scan_history(self):
         """清空扫描历史"""
         reply = QMessageBox.warning(
@@ -4798,7 +4960,7 @@ class MainWindow(QMainWindow):
             QMessageBox.Yes | QMessageBox.No,
             QMessageBox.No
         )
-        
+
         if reply == QMessageBox.Yes:
             from core.scan_history import get_scan_history
             get_scan_history().clear_history()
@@ -4808,74 +4970,74 @@ class MainWindow(QMainWindow):
                 print(f"[WARN] Failed to clear legacy scan history: {e}")
             self.refresh_dashboard()
             QMessageBox.information(self, tr("msg.done"), tr("history.cleared"))
-    
+
     def export_scan_record(self, scan_id):
         """导出单次扫描记录"""
         from core.scan_history import get_scan_history
         from core.export_manager import export_to_csv, export_to_html
-        
+
         # 获取扫描记录和Vulns据
         history = get_scan_history()
         scan_record = history.get_scan_record(scan_id)
         vulns = history.get_scan_vulns(scan_id)
-        
+
         if not scan_record:
             QMessageBox.warning(self, tr("msg.error"), tr("history.record_not_found"))
             return
-        
+
         # 弹出格式选择对话框
         dialog = QDialog(self)
         dialog.setWindowTitle(tr("export.title"))
         dialog.resize(scaled(350), scaled(150))
-        
+
         from core.fortress_style import apply_fortress_style
         apply_fortress_style(dialog, FORTRESS_COLORS)
-        
+
         layout = QVBoxLayout(dialog)
-        
+
         # 提示信息
         info_label = QLabel(f"Scan time: {scan_record.get('scan_time', '')[:19]}\n" +
                            tr("export.target_count", count=scan_record.get('target_count', 0)) + " | " +
                            tr("export.vuln_count", count=scan_record.get('vuln_count', 0)))
         info_label.setStyleSheet(scaled_style(f"font-size: 12px; color: {FORTRESS_COLORS.get('text_secondary', '#7f8c8d')}; margin-bottom: 10px;"))
         layout.addWidget(info_label)
-        
+
         # 格式选择
         format_label = QLabel(tr("export.select_format"))
         format_label.setStyleSheet(f"color: {FORTRESS_COLORS.get('text_primary', '#333')};")
         layout.addWidget(format_label)
-        
+
         format_combo = QComboBox()
         format_combo.addItems([tr("export.html_recommended"), tr("export.csv_excel")])
         layout.addWidget(format_combo)
-        
+
         # 按钮
         btn_layout = QHBoxLayout()
         btn_layout.addStretch()
-        
+
         btn_cancel = self._create_fortress_button(tr("common.cancel"), "warning")
         btn_cancel.clicked.connect(dialog.reject)
         btn_layout.addWidget(btn_cancel)
-        
+
         btn_export = self._create_fortress_button(tr("common.export"), "success")
         btn_export.clicked.connect(dialog.accept)
         btn_layout.addWidget(btn_export)
-        
+
         layout.addLayout(btn_layout)
-        
+
         if dialog.exec_() != QDialog.Accepted:
             return
-        
+
         # 获取选择的格式
         is_html = format_combo.currentIndex() == 0
-        
+
         # 选择保存路径
         scan_time_str = scan_record.get('scan_time', '')[:10].replace('-', '')
         default_name = f"scan_report_{scan_time_str}_{scan_id}"
-        
+
         if is_html:
             file_path, _ = QFileDialog.getSaveFileName(
-                self, tr("export.save_html"), 
+                self, tr("export.save_html"),
                 default_name + ".html",
                 "HTML Files (*.html)"
             )
@@ -4898,7 +5060,7 @@ class MainWindow(QMainWindow):
                     QMessageBox.warning(self, tr("msg.error"), tr("export.failed_permission"))
         else:
             file_path, _ = QFileDialog.getSaveFileName(
-                self, tr("export.save_csv"), 
+                self, tr("export.save_csv"),
                 default_name + ".csv",
                 "CSV Files (*.csv)"
             )
@@ -4919,45 +5081,45 @@ class MainWindow(QMainWindow):
         toolbar_container.setStyleSheet(scaled_style(f"background-color: {FORTRESS_COLORS['content_bg']}; border-radius: 8px;"))
         toolbar_layout = QHBoxLayout(toolbar_container)
         toolbar_layout.setContentsMargins(scaled(15), scaled(15), scaled(15), scaled(15))
-        
+
         btn_import_file = self._create_fortress_button(tr("poc.import_file"), "info")
         btn_import_file.clicked.connect(self.import_poc_file)
         toolbar_layout.addWidget(btn_import_file)
-        
+
         btn_import_dir = self._create_fortress_button(tr("poc.import_dir"), "info")
         btn_import_dir.clicked.connect(self.import_poc_dir)
         toolbar_layout.addWidget(btn_import_dir)
-        
+
         btn_sync = self._create_fortress_button(tr("poc.online_sync"), "primary")
         btn_sync.setToolTip(tr("poc.sync_tooltip"))
         btn_sync.clicked.connect(self.open_poc_sync_dialog)
         toolbar_layout.addWidget(btn_sync)
-        
+
         btn_generate = self._create_fortress_button(tr("poc.generate"), "warning")
         btn_generate.setToolTip(tr("poc.generate_tooltip"))
         btn_generate.clicked.connect(self.open_poc_generator)
         toolbar_layout.addWidget(btn_generate)
-        
+
         toolbar_layout.addStretch()
-        
+
         btn_edit = self._create_fortress_button(tr("common.edit"), "info")
         btn_edit.clicked.connect(self.open_poc_editor)
         toolbar_layout.addWidget(btn_edit)
-        
+
         btn_test = self._create_fortress_button(tr("poc.quick_test"), "info")
         btn_test.clicked.connect(self.open_poc_test)
         toolbar_layout.addWidget(btn_test)
-        
+
         btn_refresh = self._create_fortress_button(tr("common.refresh"), "info")
         btn_refresh.clicked.connect(self.refresh_poc_list)
         toolbar_layout.addWidget(btn_refresh)
-        
+
         btn_open_folder = self._create_fortress_button(tr("poc.open_folder"), "info")
         btn_open_folder.clicked.connect(lambda: os.startfile(str(self.poc_library.library_path)))
         toolbar_layout.addWidget(btn_open_folder)
-        
+
         layout.addWidget(toolbar_container)
-        
+
         # ===== 搜索和筛选区域 =====
         filter_container = QWidget()
         filter_container.setStyleSheet(scaled_style(f"background-color: {FORTRESS_COLORS['content_bg']}; border-radius: 8px;"))
@@ -4979,7 +5141,7 @@ class MainWindow(QMainWindow):
         """))
         self.poc_search_input.textChanged.connect(self.filter_poc_table)
         filter_layout.addWidget(self.poc_search_input, 1)
-        
+
         # POC 来源分类筛选
         filter_layout.addWidget(QLabel(tr("poc.filter_source")))
         self.poc_source_filter = QComboBox()
@@ -5009,7 +5171,7 @@ class MainWindow(QMainWindow):
         table_container.setStyleSheet(scaled_style(f"background-color: {FORTRESS_COLORS['content_bg']}; border-radius: 8px;"))
         table_layout = QVBoxLayout(table_container)
         table_layout.setContentsMargins(scaled(15), scaled(15), scaled(15), scaled(15))
-        
+
         self.poc_table = QTableWidget()
         self.poc_table.setColumnCount(5)
         self.poc_table.setHorizontalHeaderLabels(["ID", tr("poc.col_name"), tr("poc.col_severity"), tr("poc.col_type"), tr("poc.col_source")])
@@ -5025,18 +5187,18 @@ class MainWindow(QMainWindow):
         self.poc_table.doubleClicked.connect(self.on_poc_double_clicked)
         from core.fortress_style import get_table_stylesheet
         self.poc_table.setStyleSheet(get_table_stylesheet(FORTRESS_COLORS))
-        
+
         # 右键菜单
         self.poc_table.setContextMenuPolicy(Qt.CustomContextMenu)
         self.poc_table.customContextMenuRequested.connect(self.show_poc_context_menu)
-        
+
         table_layout.addWidget(self.poc_table)
-        
+
         # 提示
         tips = QLabel(tr("poc.tips"))
         tips.setStyleSheet(scaled_style(f"color: {FORTRESS_COLORS['text_secondary']}; font-size: 12px;"))
         table_layout.addWidget(tips)
-        
+
         layout.addWidget(table_container, 1)
 
     def refresh_poc_list(self):
@@ -5128,7 +5290,7 @@ class MainWindow(QMainWindow):
         poc_id = str(poc.get('id', '')).lower()
         name = str(poc.get('name', '')).lower()
         all_text = f"{tags} {poc_id} {name}"
-        
+
         # 按优先级匹配
         if any(k in all_text for k in ['rce', 'remote-code', 'command-execution', 'code-execution']):
             return "RCE"
@@ -5146,22 +5308,22 @@ class MainWindow(QMainWindow):
             return tr("poc.type_info_leak")
         else:
             return tr("poc.type_other")
-    
+
     def _render_poc_table(self, pocs):
         """渲染 POC 表格"""
         self.poc_table.setUpdatesEnabled(False)
         self.poc_table.setRowCount(0)
         self.poc_table.setRowCount(len(pocs))
-        
+
         for row, poc in enumerate(pocs):
             # ID
             id_item = QTableWidgetItem(poc['id'])
             id_item.setData(Qt.UserRole, poc['path'])  # 存储路径
             self.poc_table.setItem(row, 0, id_item)
-            
+
             # 名称
             self.poc_table.setItem(row, 1, QTableWidgetItem(poc['name']))
-            
+
             # 严重程度
             severity_item = QTableWidgetItem(poc['severity'])
             if poc['severity'] == 'critical':
@@ -5174,7 +5336,7 @@ class MainWindow(QMainWindow):
             elif poc['severity'] == 'low':
                 severity_item.setForeground(QColor('#3498db'))
             self.poc_table.setItem(row, 2, severity_item)
-            
+
             # 类型
             poc_type = self._get_poc_type(poc)
             type_item = QTableWidgetItem(poc_type)
@@ -5185,26 +5347,26 @@ class MainWindow(QMainWindow):
             }
             type_item.setForeground(QColor(type_colors.get(poc_type, "#7f8c8d")))
             self.poc_table.setItem(row, 3, type_item)
-            
+
             # 来源（按 POC 所在文件夹显示，支持用户任意自定义目录）
             source_text = self._folder_filter_label(
                 poc.get("folder_key", "__root__"),
                 poc.get("folder_label", "")
             )
             self.poc_table.setItem(row, 4, QTableWidgetItem(source_text))
-        
+
         self.poc_table.setUpdatesEnabled(True)
-    
+
     def filter_poc_table(self):
         """筛选 POC 表格 - 增强版，支持来源分类和 CVE 搜索"""
         if not hasattr(self, 'all_poc_data'):
             return
-        
+
         keyword = self.poc_search_input.text().lower().strip()
         type_filter = self.poc_type_filter.currentText()
         severity_filter = self.poc_severity_filter.currentText()
         source_filter = self.poc_source_filter.currentData() if hasattr(self, 'poc_source_filter') else ""
-        
+
         filtered = []
         for poc in self.all_poc_data:
             # 来源分类匹配
@@ -5212,28 +5374,28 @@ class MainWindow(QMainWindow):
                 folder_key = poc.get("folder_key", "__root__")
                 if folder_key != source_filter and not str(folder_key).startswith(f"{source_filter}/"):
                     continue
-            
+
             # 关键词匹配（增强版：支持 CVE 编号搜索）
             if keyword:
                 search_text = f"{poc['id']} {poc['name']} {poc.get('tags', '')} {poc.get('description', '')}".lower()
                 if keyword not in search_text:
                     continue
-            
+
             # 类型匹配
             if type_filter != tr("common.all"):
                 poc_type = self._get_poc_type(poc)
                 if poc_type != type_filter:
                     continue
-            
+
             # 严重程度匹配
             if severity_filter != tr("common.all"):
                 if poc.get('severity', '').lower() != severity_filter.lower():
                     continue
-            
+
             filtered.append(poc)
-        
+
         self._render_poc_table(filtered)
-        
+
         # 更新状态栏显示筛选结果数
         if hasattr(self, 'status_bar'):
             total = len(self.all_poc_data)
@@ -5242,55 +5404,55 @@ class MainWindow(QMainWindow):
                 self.status_bar.showMessage(tr("poc.filtered_count", shown=shown, total=total))
             else:
                 self.status_bar.showMessage(tr("poc.total_count", total=total))
-    
+
     def show_poc_context_menu(self, pos):
         """显示右键菜单"""
         from PyQt5.QtWidgets import QMenu
-        
+
         selected_rows = self.poc_table.selectionModel().selectedRows()
         if not selected_rows:
             return
-        
+
         menu = QMenu(self)
-        
+
         # 应用样式
         from core.fortress_style import get_menu_stylesheet
         menu.setAttribute(Qt.WA_TranslucentBackground) # 配合圆角
         menu.setWindowFlags(menu.windowFlags() | Qt.FramelessWindowHint) # 去除系统边框
         menu.setStyleSheet(get_menu_stylesheet())
-        
+
         add_action = menu.addAction(tr("poc.add_to_scan"))
         add_action.triggered.connect(self.add_selected_pocs_to_scan)
-        
+
         copy_action = menu.addAction(tr("poc.copy_name"))
         copy_action.triggered.connect(self.copy_poc_ids)
-        
+
         menu.addSeparator()
-        
+
         # AI 分析（只对单选有效）
         if len(selected_rows) == 1:
             ai_action = menu.addAction(tr("poc.ai_analyze"))
             ai_action.triggered.connect(self.ai_analyze_poc)
-        
+
         edit_action = menu.addAction(tr("common.edit"))
         edit_action.triggered.connect(self.open_poc_editor)
-        
+
         test_action = menu.addAction(tr("poc.quick_test"))
         test_action.triggered.connect(self.open_poc_test)
-        
+
         menu.addSeparator()
-        
+
         delete_action = menu.addAction(tr("common.delete"))
         delete_action.triggered.connect(self.delete_selected_pocs)
-        
+
         menu.exec_(self.poc_table.viewport().mapToGlobal(pos))
-    
+
     def delete_selected_pocs(self):
         """删除选中的 POC（二次确认）"""
         selected_rows = self.poc_table.selectionModel().selectedRows()
         if not selected_rows:
             return
-        
+
         # 获取选中的 POC 信息
         pocs_to_delete = []
         for index in selected_rows:
@@ -5301,41 +5463,41 @@ class MainWindow(QMainWindow):
                 poc_path = item.data(Qt.UserRole)
                 if poc_path:
                     pocs_to_delete.append((poc_id, poc_path))
-        
+
         if not pocs_to_delete:
             return
-        
+
         # 二次确认
         msg = f"Confirm delete {len(pocs_to_delete)}  POCs?\n\n"
         msg += "\n".join([f"• {pid}" for pid, _ in pocs_to_delete[:5]])
         if len(pocs_to_delete) > 5:
             msg += f"\n... and {len(pocs_to_delete) - 5}  more"
         msg += "\n\nThis action cannot be undone!"
-        
+
         reply = QMessageBox.warning(
             self, tr("msg.confirm_delete"), msg,
             QMessageBox.Yes | QMessageBox.No,
             QMessageBox.No
         )
-        
+
         if reply != QMessageBox.Yes:
             return
-        
+
         # 执行删除
         deleted = 0
         for poc_id, poc_path in pocs_to_delete:
             if self.poc_library.delete_poc(poc_path):
                 deleted += 1
-        
+
         QMessageBox.information(self, tr("msg.done"), tr("poc.deleted_count", count=deleted))
         self.refresh_poc_list()
-    
+
     def add_selected_pocs_to_scan(self):
         """将选中的 POC 添加到扫描列表"""
         selected_rows = self.poc_table.selectionModel().selectedRows()
         if not selected_rows:
             return
-        
+
         # 获取选中的 POC 路径
         poc_paths = []
         for index in selected_rows:
@@ -5345,28 +5507,28 @@ class MainWindow(QMainWindow):
                 path = item.data(Qt.UserRole)
                 if path:
                     poc_paths.append(path)
-        
+
         if not poc_paths:
             return
-        
+
         # 将选中的 POC 加入待选队列
         added_count = 0
         for path in poc_paths:
             if path not in self.pending_scan_pocs:
                 self.pending_scan_pocs.add(path)
                 added_count += 1
-        
+
         # 显示提示信息（状态栏）
         current_total = len(self.pending_scan_pocs)
         added_key = "poc.added_to_queue.single" if added_count == 1 else "poc.added_to_queue.multiple"
         msg = tr(added_key, count=added_count, current_total=current_total)
         self.status_bar.showMessage(msg, 5000)  # 显示 5 秒
         QMessageBox.information(self, tr("msg.success"), msg)
-    
+
     def copy_poc_ids(self):
         """复制选中的 POC 名称"""
         from PyQt5.QtWidgets import QApplication
-        
+
         selected_rows = self.poc_table.selectionModel().selectedRows()
         names = []
         for index in selected_rows:
@@ -5375,22 +5537,22 @@ class MainWindow(QMainWindow):
             item = self.poc_table.item(row, 1)
             if item:
                 names.append(item.text())
-        
+
         if names:
             QApplication.clipboard().setText("\n".join(names))
             QMessageBox.information(self, tr("msg.success"), tr("poc.names_copied", count=len(names)))
-    
+
     def ai_analyze_poc(self):
         """AI 分析 POC - 打开 AI 弹窗并预填充 POC 名称到 FOFA 生成框"""
         selected_rows = self.poc_table.selectionModel().selectedRows()
         if not selected_rows:
             return
-        
+
         # 获取 POC 名称（第 2 列）
         row = selected_rows[0].row()
         name_item = self.poc_table.item(row, 1)
         poc_name = name_item.text() if name_item else ""
-        
+
         # 打开 AI 对话框并传入 POC 名称
         dialog = AIAssistantDialog(self, initial_poc_name=poc_name)
         dialog.exec_()
@@ -5417,7 +5579,7 @@ class MainWindow(QMainWindow):
                             count += 1
             QMessageBox.information(self, tr("msg.done"), tr("poc.batch_import_done", count=count))
             self.refresh_poc_list()
-    
+
     def open_poc_sync_dialog(self):
         """打开 POC 在线同步弹窗"""
         from dialogs.poc_sync_dialog import POCSyncDialog
@@ -5425,11 +5587,11 @@ class MainWindow(QMainWindow):
         dialog = POCSyncDialog(str(self.poc_library.cloud_path), self, colors=FORTRESS_COLORS)
         if dialog.exec_() == QDialog.Accepted:
             self.refresh_poc_list()
-    
+
     def open_poc_editor(self):
         """打开 POC 编辑器"""
         from dialogs.poc_editor_dialog import POCEditorDialog
-        
+
         # 获取选中的 POC
         selected_rows = self.poc_table.selectionModel().selectedRows()
         poc_path = None
@@ -5438,43 +5600,43 @@ class MainWindow(QMainWindow):
             item = self.poc_table.item(row, 0)
             if item:
                 poc_path = item.data(Qt.UserRole)  # 从 UserRole 获取路径
-        
+
         dialog = POCEditorDialog(poc_path, self, colors=FORTRESS_COLORS)
         dialog.exec_()
-    
+
     def open_poc_test(self):
         """打开 POC 快速测试弹窗"""
         from dialogs.poc_test_dialog import POCTestDialog
-        
+
         # 获取选中的 POC
         selected_rows = self.poc_table.selectionModel().selectedRows()
         if not selected_rows:
             QMessageBox.warning(self, tr("msg.hint"), tr("poc.select_poc_first"))
             return
-        
+
         row = selected_rows[0].row()
         item = self.poc_table.item(row, 0)
         poc_path = item.data(Qt.UserRole) if item else None  # 从 UserRole 获取路径
         poc_name = item.text() if item else ""
-        
+
         dialog = POCTestDialog(poc_path, poc_name, self, colors=FORTRESS_COLORS)
         dialog.exec_()
-    
+
     def open_poc_generator(self):
         """打开 POC 生成器"""
         from dialogs.poc_generator_dialog import POCGeneratorDialog
-        
+
         dialog = POCGeneratorDialog(self, colors=FORTRESS_COLORS)
         if dialog.exec_() == QDialog.Accepted:
             # 刷新 POC 列表以显示新生成的 POC
             self.refresh_poc_list()
-    
+
     def on_poc_double_clicked(self, index):
         """双击 POC 打开编辑器"""
         row = index.row()
         item = self.poc_table.item(row, 0)
         poc_path = item.data(Qt.UserRole) if item else None  # 从 UserRole 获取路径
-        
+
         from dialogs.poc_editor_dialog import POCEditorDialog
         dialog = POCEditorDialog(poc_path, self, colors=FORTRESS_COLORS)
         dialog.exec_()
@@ -5485,7 +5647,7 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout(self.scan_tab)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(scaled(15))
-        
+
         # ===== 顶部操作栏 =====
         action_bar = QWidget()
         action_bar.setStyleSheet(scaled_style(f"""
@@ -5496,22 +5658,22 @@ class MainWindow(QMainWindow):
         """))
         action_layout = QHBoxLayout(action_bar)
         action_layout.setContentsMargins(scaled(15), scaled(12), scaled(15), scaled(12))
-        
+
         # 快捷新建扫描按钮
         btn_quick_scan = self._create_fortress_button(tr("scan.new_scan"), "primary")
         btn_quick_scan.clicked.connect(self.show_new_scan_dialog)
         action_layout.addWidget(btn_quick_scan)
-        
+
         # 导出结果按钮
         btn_export = self._create_fortress_button(tr("scan.export_results"), "info")
         btn_export.clicked.connect(self.export_results)
         action_layout.addWidget(btn_export)
-        
+
         # 查看日志按钮
         btn_log = self._create_fortress_button(tr("scan.view_log"), "info")
         btn_log.clicked.connect(self.show_log_dialog)
         action_layout.addWidget(btn_log)
-        
+
         action_layout.addStretch()
 
         # 进度区域
@@ -5578,7 +5740,7 @@ class MainWindow(QMainWindow):
         stats_layout = QHBoxLayout(stats_panel)
         stats_layout.setContentsMargins(scaled(15), scaled(10), scaled(15), scaled(10))
         stats_layout.setSpacing(scaled(20))
-        
+
         # 统计卡片
         self.scan_stat_targets = self._create_scan_stat_card(tr("scan.stat_targets"), "0", "#3b82f6")
         self.scan_stat_pocs = self._create_scan_stat_card(tr("scan.stat_pocs"), "0", "#8b5cf6")
@@ -5587,7 +5749,7 @@ class MainWindow(QMainWindow):
         self.scan_stat_high = self._create_scan_stat_card(tr("severity.high"), "0", "#e74c3c")
         self.scan_stat_medium = self._create_scan_stat_card(tr("severity.medium"), "0", "#f97316")
         self.scan_stat_low = self._create_scan_stat_card(tr("severity.low"), "0", "#3b82f6")
-        
+
         stats_layout.addWidget(self.scan_stat_targets)
         stats_layout.addWidget(self.scan_stat_pocs)
         stats_layout.addWidget(self.scan_stat_vulns)
@@ -5596,12 +5758,12 @@ class MainWindow(QMainWindow):
         stats_layout.addWidget(self.scan_stat_medium)
         stats_layout.addWidget(self.scan_stat_low)
         stats_layout.addStretch()
-        
+
         layout.addWidget(stats_panel)
-        
+
         # ===== 隐藏的配置区域（用于保存目标和 POC 数据）=====
         self._setup_hidden_scan_config()
-        
+
         # ===== 结果表格 =====
         table_container = QWidget()
         table_container.setStyleSheet(scaled_style(f"""
@@ -5631,24 +5793,24 @@ class MainWindow(QMainWindow):
         header.setSectionResizeMode(5, QHeaderView.Fixed)
         self.result_table.setColumnWidth(5, scaled(184))  # 操作列 - 预留两个按钮和间距，避免挤压
         self.result_table.verticalHeader().setDefaultSectionSize(scaled(50)) # 再次增加默认行高
-        
+
         self.result_table.verticalHeader().setVisible(False)
         self.result_table.setSelectionBehavior(QTableWidget.SelectRows)
         self.result_table.setAlternatingRowColors(True)
         self.result_table.setToolTip(tr("scan.double_click_tooltip"))
         self.result_table.doubleClicked.connect(self.show_result_detail)
-        
+
         # 设置交替行颜色
         palette = self.result_table.palette()
         palette.setColor(palette.AlternateBase, QColor(FORTRESS_COLORS['table_row_alt']))
         self.result_table.setPalette(palette)
-        
+
         table_layout.addWidget(self.result_table)
         layout.addWidget(table_container, 1)
-        
+
         # 存储完整结果数据
         self.scan_results_data = []
-        
+
         # ===== 日志区域 =====
         log_container = QWidget()
         log_container.setMaximumHeight(scaled(150))
@@ -5684,34 +5846,34 @@ class MainWindow(QMainWindow):
         log_layout.addWidget(self.log_output)
 
         layout.addWidget(log_container)
-        
+
         # 完整日志存储
         self.full_log = deque(maxlen=3000)
-    
+
     def _setup_hidden_scan_config(self):
         """设置隐藏的扫描配置组件（用于数据存储）"""
         # 目标输入（隐藏）
         self.txt_targets = PlainPasteTextEdit()
         self.txt_targets.hide()
-        
+
         # POC 列表（隐藏）
         self.list_scan_pocs = QTableWidget()
         self.list_scan_pocs.setColumnCount(4)
         self.list_scan_pocs.itemChanged.connect(self.on_poc_selection_changed)
         self.list_scan_pocs.hide()
-        
+
         # 搜索和筛选组件（隐藏）
         self.txt_search_poc = QLineEdit()
         self.txt_search_poc.hide()
-        
+
         self.cmb_severity_filter = QComboBox()
         self.cmb_severity_filter.addItems([tr("common.all"), "critical", "high", "medium", "low", "info"])
         self.cmb_severity_filter.hide()
-        
+
         # Selected按钮（隐藏）
         self.btn_selected_pocs = QPushButton()
         self.btn_selected_pocs.hide()
-    
+
     def load_scan_config(self):
         """从设置管理器加载扫描参数（供其他地方调用）"""
         # UI 组件已移除，此方法保留用于兼容性
@@ -5723,31 +5885,31 @@ class MainWindow(QMainWindow):
         if row_count == 0:
             QMessageBox.warning(self, tr("msg.hint"), tr("scan.no_results_to_export"))
             return
-            
+
         file_path, _ = QFileDialog.getSaveFileName(self, tr("scan.save_results"), "scan_results.csv", "CSV Files (*.csv);;JSON Files (*.json)")
         if not file_path:
             return
-            
+
         try:
             import csv
-            
+
             # 收集数据
             data = []
             headers = [tr("scan.col_time"), tr("scan.col_vuln_id"), tr("scan.col_target"), tr("scan.col_severity"), tr("scan.col_details")]
-            
+
             for i in range(row_count):
                 row_data = []
                 for j in range(5):
                     item = self.result_table.item(i, j)
                     row_data.append(item.text() if item else "")
                 data.append(row_data)
-            
+
             if file_path.endswith('.csv'):
                 with open(file_path, 'w', newline='', encoding='utf-8-sig') as f:
                     writer = csv.writer(f)
                     writer.writerow(headers)
                     writer.writerows(data)
-                    
+
             elif file_path.endswith('.json'):
                 import json
                 json_data = []
@@ -5755,9 +5917,9 @@ class MainWindow(QMainWindow):
                     json_data.append(dict(zip(headers, row)))
                 with open(file_path, 'w', encoding='utf-8') as f:
                     json.dump(json_data, f, ensure_ascii=False, indent=2)
-                    
+
             QMessageBox.information(self, tr("msg.success"), f"Results saved to:\n{file_path}")
-            
+
         except Exception as e:
             QMessageBox.critical(self, tr("msg.error"), tr("export.failed", error=str(e)))
 
@@ -5944,7 +6106,7 @@ class MainWindow(QMainWindow):
             item = table.item(i, 0)
             if item:
                 item.setCheckState(state)
-    
+
     def _apply_selected_changes(self, poc_list, dialog):
         """应用Selected POC 的更改"""
         # 遍历弹窗列表，同步到主列表
@@ -5957,11 +6119,11 @@ class MainWindow(QMainWindow):
                 main_item = self.list_scan_pocs.item(original_row, 0)
                 if main_item:
                     main_item.setCheckState(new_state)
-        
+
         # 更新按钮文本
         count = len(self.get_selected_pocs())
         self.btn_selected_pocs.setText(f"📋 Selected ({count})")
-        
+
         dialog.accept()
 
     def start_scan(self, targets: list = None, templates: list = None):
@@ -6239,34 +6401,34 @@ Description: {description}"""
             task = self.task_queue.get_task(task_id)
             if not task:
                 return
-                
+
             # 计算耗时
             duration = 0
             if task.started_at and task.completed_at:
                 duration = (task.completed_at - task.started_at).total_seconds()
-            
+
             # 保存到扫描历史
             self._save_scan_history("completed", duration, task.result_count, task_results=task.results)
-            
+
             self.statusBar().showMessage(tr("task.completed_msg", name=task.name, count=task.vuln_count), 5000)
 
     def _save_scan_history(self, status, duration, result_count, task_results=None):
         """保存扫描历史记录到仪表盘数据库"""
         # 修复：使用 ScanHistory 类（与仪表盘一致），而非 HistoryManager
         from core.scan_history import get_scan_history
-        
+
         # 如果没有提供 explicit results，尝试使用当前扫描结果
         results_to_save = task_results
         if results_to_save is None and hasattr(self, 'scan_results_data'):
              results_to_save = self.scan_results_data
         if results_to_save is None:
             results_to_save = []
-            
+
         # 获取目标和 POC 信息
         targets = []
         templates = []
         config = {}
-        
+
         # 情况1: 尝试从直接扫描的属性获取
         if hasattr(self, 'current_scan_targets') and self.current_scan_targets:
             targets = self.current_scan_targets
@@ -6274,7 +6436,7 @@ Description: {description}"""
             templates = self.current_scan_templates
         if hasattr(self, 'current_scan_config') and self.current_scan_config:
             config = self.current_scan_config
-        
+
         # 情况2: 如果上面没有数据，尝试从任务队列获取（任务列表启动的扫描）
         if (not targets or not templates) and hasattr(self, 'current_task_id') and self.current_task_id:
             from core.task_queue_manager import get_task_queue_manager
@@ -6288,10 +6450,10 @@ Description: {description}"""
 
         target_count = len(targets) if targets else 0
         poc_count = len(templates) if templates else 0
-        
+
         try:
             history_mgr = get_scan_history()
-            
+
             # 添加扫描记录
             scan_id = history_mgr.add_scan_record(
                 target_count=target_count,
@@ -6303,24 +6465,24 @@ Description: {description}"""
                 config=config,
                 status=status
             )
-            
+
             # 保存每个漏洞结果详情
             for result in results_to_save:
                 history_mgr.add_vuln_result(scan_id, result)
-                
+
             print(f"[ScanHistory] Saved scan record (ID: {scan_id}, status: {status}, vulns: {result_count})")
-            
+
         except Exception as e:
             print(f"Save scan history failed: {e}")
-            
+
         # 刷新仪表盘
         if hasattr(self, 'refresh_dashboard'):
             self.refresh_dashboard()
-    
+
     def _show_scan_result_detail(self, result):
         """显示扫描结果详情 - FORTRESS 风格"""
         import json
-        
+
         dialog = QDialog(self)
         dialog.setWindowTitle(tr("report.vuln_detail", id=result.get('template-id', 'Unknown')))
         dialog.resize(scaled(800), scaled(600))
@@ -6329,7 +6491,7 @@ Description: {description}"""
                 background-color: {FORTRESS_COLORS['content_bg']};
             }}
         """)
-        
+
         layout = QVBoxLayout(dialog)
         layout.setSpacing(scaled(15))
         layout.setContentsMargins(scaled(20), scaled(20), scaled(20), scaled(20))
@@ -6373,14 +6535,14 @@ Description: {description}"""
         info_container.setStyleSheet(scaled_style(f"background-color: {info_bg}; border-radius: 8px;"))
         info_layout = QVBoxLayout(info_container)
         info_layout.setContentsMargins(scaled(15), scaled(15), scaled(15), scaled(15))
-        
+
         fields = [
             (tr("scan.detail_target"), result.get('matched-at', 'N/A')),
             (tr("scan.detail_template_id"), result.get('template-id', 'N/A')),
             (tr("scan.detail_found_time"), result.get('timestamp', 'N/A')),
             (tr("scan.detail_description"), info.get('description', 'N/A')),
         ]
-        
+
         for label, value in fields:
             row = QHBoxLayout()
             lbl = QLabel(f"{label}:")
@@ -6415,26 +6577,26 @@ Description: {description}"""
         """))
         json_text.setPlainText(json.dumps(result, indent=2, ensure_ascii=False))
         layout.addWidget(json_text)
-        
+
         # 按钮
         btn_row = QHBoxLayout()
         btn_row.addStretch()
-        
+
         btn_copy = self._create_fortress_button(tr("scan.copy_json"), "info")
         btn_copy.clicked.connect(lambda: (
             QApplication.clipboard().setText(json.dumps(result, indent=2, ensure_ascii=False)),
             QMessageBox.information(dialog, tr("msg.success"), tr("common.copied_to_clipboard"))
         ))
         btn_row.addWidget(btn_copy)
-        
+
         btn_close = self._create_fortress_button(tr("common.close"), "primary")
         btn_close.clicked.connect(dialog.close)
         btn_row.addWidget(btn_close)
-        
+
         layout.addLayout(btn_row)
-        
+
         dialog.exec_()
-    
+
 
     def stop_scan(self):
         """停止扫描 - 支持直接扫描和任务列表扫描"""
@@ -6443,7 +6605,7 @@ Description: {description}"""
             # 1. 发送停止信号
             self.scan_thread.stop()
             self.append_log("[!] User stopped scan")
-            
+
             # 2. 断开所有信号连接，防止后台继续更新 UI
             try:
                 self.scan_thread.log_signal.disconnect(self.append_log)
@@ -6461,25 +6623,25 @@ Description: {description}"""
                 self.scan_thread.finished_signal.disconnect(self.scan_finished)
             except:
                 pass
-            
+
             # 3. 立即更新 UI 状态（不等待线程结束）
             self._reset_scan_ui_after_stop()
             return
-        
+
         # 情况2: 任务列表扫描（通过 TaskQueueManager）
         if hasattr(self, 'current_task_id') and self.current_task_id:
             from core.task_queue_manager import get_task_queue_manager, TaskStatus
             queue = get_task_queue_manager()
-            
+
             # 取消任务
             if queue.cancel_task(self.current_task_id):
                 self.append_log("[!] User stopped scan (task queue)")
                 self._reset_scan_ui_after_stop()
                 return
-        
+
         # 没有找到正在运行的扫描
         self.append_log("[!] No running scan task")
-    
+
     def _reset_scan_ui_after_stop(self):
         """停止扫描后重置 UI 状态"""
         self.btn_start.setEnabled(True)
@@ -6488,22 +6650,22 @@ Description: {description}"""
         self.btn_pause.setEnabled(False)
         self.btn_pause.setText(tr("task.pause"))
         self.progress_bar.hide()
-        
+
         # 计算耗时
         import time
         duration = time.time() - getattr(self, 'scan_start_time', time.time())
         duration_str = tr("time.ms", m=int(duration // 60), s=int(duration % 60)) if duration >= 60 else tr("time.seconds", s=int(duration))
         result_count = self.result_table.rowCount()
-        
+
         # 保存扫描历史（标记为用户停止）
         self._save_scan_history("stopped", duration, result_count)
-        
+
         # 更新任务队列中的状态为已取消
         if hasattr(self, 'current_task_id') and self.current_task_id:
             from core.task_queue_manager import get_task_queue_manager, TaskStatus
             queue = get_task_queue_manager()
             queue.update_task_status(self.current_task_id, TaskStatus.CANCELLED)
-        
+
         self.lbl_progress.setText(tr("scan.stopped_summary", duration=duration_str, count=result_count))
 
         # 更新状态指示器
@@ -6532,16 +6694,16 @@ Description: {description}"""
                     self._update_pause_ui_to_paused()
                     return True
             return False
-        
+
         # 情况2: 任务列表扫描（通过 TaskQueueManager）
         if hasattr(self, 'current_task_id') and self.current_task_id:
             from core.task_queue_manager import get_task_queue_manager, TaskStatus
             queue = get_task_queue_manager()
             task = queue.get_task(self.current_task_id)
-            
+
             if not task:
                 return False
-            
+
             if task.status == TaskStatus.PAUSED:
                 # 当前是暂停状态，点击继续
                 if queue.resume_task(self.current_task_id):
@@ -6553,7 +6715,7 @@ Description: {description}"""
                     self._update_pause_ui_to_paused()
                     return True
         return False
-    
+
     def _update_pause_ui_to_running(self):
         """更新 UI 为运行状态"""
         self.btn_pause.setText(tr("task.pause"))
@@ -6587,7 +6749,7 @@ Description: {description}"""
             background-color: #eff6ff;
             border-radius: 12px;
         """))
-        
+
         # 同步更新任务队列状态
         if hasattr(self, 'current_task_id') and self.current_task_id:
             from core.task_queue_manager import get_task_queue_manager, TaskStatus
@@ -6602,56 +6764,56 @@ Description: {description}"""
             self.log_dialog.raise_()
             self.log_dialog.activateWindow()
             return
-            
+
         self.log_dialog = QDialog(self)
         self.log_dialog.setWindowTitle(tr("log.realtime_log"))
         self.log_dialog.resize(scaled(900), scaled(600))
-        
+
         # 应用全局样式
         from core.fortress_style import apply_fortress_style, get_button_style, get_secondary_button_style
         apply_fortress_style(self.log_dialog, FORTRESS_COLORS)
-        
+
         layout = QVBoxLayout(self.log_dialog)
-        
+
         # 提示标签
         lbl_hint = QLabel(tr("log.realtime_hint"))
         lbl_hint.setStyleSheet(f"color: {FORTRESS_COLORS['btn_success']}; font-weight: bold;")
         layout.addWidget(lbl_hint)
-        
+
         self.live_log_text = QTextEdit()
         self.live_log_text.setReadOnly(True)
         self.live_log_text.setStyleSheet(scaled_style("font-family: Consolas; font-size: 10pt; background-color: #1e1e1e; color: #dcdcdc; border-radius: 6px;"))
         self.live_log_text.setText("\n".join(self.full_log))
         layout.addWidget(self.live_log_text)
-        
+
         btn_row = QHBoxLayout()
         btn_row.addStretch()
-        
+
         btn_clear = QPushButton(tr("log.clear_log"))
         btn_clear.setCursor(Qt.PointingHandCursor)
         btn_clear.setStyleSheet(get_button_style("warning"))
         btn_clear.clicked.connect(lambda: (self.full_log.clear(), self.live_log_text.clear(), self.log_output.clear()))
         btn_row.addWidget(btn_clear)
-        
+
         btn_close = QPushButton(tr("common.close"))
         btn_close.setCursor(Qt.PointingHandCursor)
         btn_close.setStyleSheet(get_secondary_button_style())
         btn_close.clicked.connect(self.log_dialog.close)
         btn_row.addWidget(btn_close)
-        
+
         layout.addLayout(btn_row)
-        
+
         # 使用 QTimer 定时刷新日志
         from PyQt5.QtCore import QTimer
         self.log_timer = QTimer()
         self.log_timer.timeout.connect(self.update_live_log)
         self.log_timer.start(500)  # 每 500ms 刷新一次
-        
+
         # 窗口关闭时停止计时器
         self.log_dialog.finished.connect(lambda: self.log_timer.stop() if hasattr(self, 'log_timer') else None)
-        
+
         self.log_dialog.show()  # 非模态显示
-    
+
     def update_live_log(self):
         """更新实时日志"""
         if hasattr(self, 'live_log_text') and self.live_log_text:
@@ -6660,9 +6822,9 @@ Description: {description}"""
                 # 保存滚动位置
                 scrollbar = self.live_log_text.verticalScrollBar()
                 at_bottom = scrollbar.value() >= scrollbar.maximum() - 10
-                
+
                 self.live_log_text.setText(current_text)
-                
+
                 # 如果之前在底部，保持滚动到底部
                 if at_bottom:
                     scrollbar.setValue(scrollbar.maximum())
@@ -6672,15 +6834,15 @@ Description: {description}"""
         row = index.row()
         if row < 0 or row >= len(self.scan_results_data):
             return
-        
+
         result = self.scan_results_data[row]
-        
+
         dialog = QDialog(self)
         dialog.setWindowTitle(tr("report.vuln_detail", id=result.get('template-id', 'Unknown')))
         dialog.resize(scaled(700), scaled(500))
-        
+
         layout = QVBoxLayout(dialog)
-        
+
         # 基本信息
         info_text = f"""
 <h2>🔍 {result.get('template-id', 'Unknown')}</h2>
@@ -6692,28 +6854,28 @@ Description: {description}"""
 <hr>
 <h3>📋 Full JSON Data:</h3>
 """
-        
+
         detail_text = QTextEdit()
         detail_text.setReadOnly(True)
         detail_text.setHtml(info_text)
-        
+
         import json
         json_text = QTextEdit()
         json_text.setReadOnly(True)
         json_text.setStyleSheet(scaled_style("font-family: Consolas; font-size: 10pt; background-color: #1e1e1e; color: #dcdcdc;"))
         json_text.setPlainText(json.dumps(result, indent=2, ensure_ascii=False))
-        
+
         layout.addWidget(detail_text)
         layout.addWidget(json_text)
-        
+
         btn_copy = QPushButton("📋 Copy JSON")
         btn_copy.clicked.connect(lambda: QApplication.clipboard().setText(json.dumps(result, indent=2, ensure_ascii=False)))
         layout.addWidget(btn_copy)
-        
+
         btn_close = QPushButton(tr("common.close"))
         btn_close.clicked.connect(dialog.close)
         layout.addWidget(btn_close)
-        
+
         dialog.exec_()
 
 # 全局异常捕获
@@ -6722,15 +6884,15 @@ def install_exception_hook():
     import sys
     import traceback
     from PyQt5.QtWidgets import QMessageBox, QApplication
-    
+
     def _check_nuclei_status(self):
         """检测 Nuclei 状态"""
         try:
             from core.nuclei_runner import get_nuclei_path
             import os
-            
+
             nuclei_path = get_nuclei_path()
-            
+
             if os.path.exists(nuclei_path):
                 self.nuclei_status_label.setText(tr("nuclei.status_installed"))
                 self.nuclei_status_label.setStyleSheet(f"color: {FORTRESS_COLORS['btn_success']}; font-weight: bold;")
@@ -6743,7 +6905,7 @@ def install_exception_hook():
         except Exception as e:
             self.nuclei_status_label.setText(tr("nuclei.detect_failed", error=str(e)))
             self.nuclei_status_label.setStyleSheet(f"color: {FORTRESS_COLORS['status_critical']}; font-weight: bold;")
-    
+
     def _download_nuclei(self):
         """下载 Nuclei"""
         try:
@@ -6751,12 +6913,12 @@ def install_exception_hook():
             import sys
             import os
             from PyQt5.QtCore import QThread, pyqtSignal
-            
+
             # 创建下载线程
             class NucleiDownloadThread(QThread):
                 progress_signal = pyqtSignal(str)
                 finished_signal = pyqtSignal(bool, str)
-                
+
                 def run(self):
                     try:
                         self.progress_signal.emit(tr("nuclei.downloading"))
@@ -6769,27 +6931,27 @@ def install_exception_hook():
                             self.finished_signal.emit(True, tr("nuclei.download_complete"))
                         else:
                             self.finished_signal.emit(False, tr("nuclei.download_failed"))
-                            
+
                     except Exception as e:
                         self.finished_signal.emit(False, tr("nuclei.download_error", error=str(e)))
-            
+
             # 禁用按钮并启动下载
             self.download_nuclei_btn.setEnabled(False)
             self.nuclei_progress_label.setText(tr("nuclei.preparing_download"))
-            
+
             self.nuclei_download_thread = NucleiDownloadThread()
             self.nuclei_download_thread.progress_signal.connect(self.nuclei_progress_label.setText)
             self.nuclei_download_thread.finished_signal.connect(self._on_nuclei_download_finished)
             self.nuclei_download_thread.start()
-            
+
         except Exception as e:
             QMessageBox.critical(self, tr("msg.error"), tr("nuclei.start_download_failed", error=str(e)))
             self.download_nuclei_btn.setEnabled(True)
-    
+
     def _on_nuclei_download_finished(self, success, message):
         """Nuclei 下载完成回调"""
         self.download_nuclei_btn.setEnabled(True)
-        
+
         if success:
             QMessageBox.information(self, tr("msg.success"), message)
             self.nuclei_progress_label.setText(tr("nuclei.download_done"))
@@ -6797,18 +6959,18 @@ def install_exception_hook():
         else:
             QMessageBox.critical(self, tr("msg.failure"), message)
             self.nuclei_progress_label.setText(tr("nuclei.download_failed_status"))
-    
+
     def exception_hook(exctype, value, tb):
         error_msg = "".join(traceback.format_exception(exctype, value, tb))
         print(error_msg)  # 输出到控制台
-        
+
         # 确保 QApplication 实例存在
         if QApplication.instance():
             QMessageBox.critical(None, "Program Error", f"Uncaught exception: \n{str(value)}\n\n{error_msg}")
-        
+
         # 调用原始的钩子
         sys.__excepthook__(exctype, value, tb)
-        
+
     sys.excepthook = exception_hook
 
 if __name__ == "__main__":
@@ -6816,10 +6978,10 @@ if __name__ == "__main__":
     from PyQt5.QtWidgets import QApplication, QDesktopWidget
     from PyQt5.QtGui import QFont
     from PyQt5.QtCore import Qt
-    
+
     install_exception_hook()
     ensure_external_layout()
-    
+
     # 启用高 DPI 缩放支持
     try:
         QApplication.setAttribute(Qt.AA_EnableHighDpiScaling)
@@ -6827,17 +6989,19 @@ if __name__ == "__main__":
     except Exception as e:
         print(f"Error setting DPI attributes: {e}")
         pass
-    
+
     # Windows 任务栏图标修复：设置 AppUserModelID
     # 这样 Windows 才会把程序识别为独立应用，而不是 Python 的子进程
-    try:
-        import ctypes
-        app_id = 'NucleiGUI.Scanner.App.1.0'  # 自定义应用程序 ID
-        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(app_id)
-    except Exception as e:
-        print(f"Error setting AppUserModelID: {e}")
-        pass
-    
+    import platform
+    if platform.system() == 'Windows':
+        try:
+            import ctypes
+            app_id = 'NucleiGUI.Scanner.App.1.0'  # 自定义应用程序 ID
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(app_id)
+        except Exception as e:
+            print(f"Error setting AppUserModelID: {e}")
+            pass
+
     app = QApplication(sys.argv)
 
     # 获取屏幕信息和系统 DPI 缩放
@@ -6870,7 +7034,17 @@ if __name__ == "__main__":
 
         print(f"[DPI Info] Screen: {screen.width()}x{screen.height()}, DPI: {logical_dpi}, System Scale: {system_scale:.0%}, UI_SCALE: {get_ui_scale()}")
 
-    font = QFont("Microsoft YaHei", font_size)
+    # 跨平台字体设置
+    import platform
+    if platform.system() == 'Windows':
+        font_family = "Microsoft YaHei"
+    elif platform.system() == 'Darwin':  # macOS
+        font_family = "PingFang SC"
+    else:  # Linux
+        font_family = "Noto Sans CJK SC"
+
+    # 直接设置字体，Qt 会自动回退到系统默认字体
+    font = QFont(font_family, font_size)
     app.setFont(font)
 
     window = MainWindow()

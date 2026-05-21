@@ -8,7 +8,7 @@ from PyQt5.QtWidgets import (
     QComboBox, QGroupBox
 )
 from PyQt5.QtCore import Qt
-from PyQt5.QtGui import QFont
+from PyQt5.QtGui import QFont, QFontDatabase
 
 import sys
 import os
@@ -90,7 +90,15 @@ class AIVulnReportDialog(QDialog):
         report_layout = QVBoxLayout(report_group)
         self.report_output = QTextEdit()
         self.report_output.setReadOnly(True)
-        self.report_output.setFont(QFont("Microsoft YaHei", scaled(10)))
+        # 跨平台字体设置
+        import platform
+        if platform.system() == 'Windows':
+            font_family = "Microsoft YaHei"
+        elif platform.system() == 'Darwin':  # macOS
+            font_family = "PingFang SC"
+        else:  # Linux
+            font_family = "Noto Sans CJK SC"
+        self.report_output.setFont(QFont(font_family, scaled(10)))
         self.report_output.setPlaceholderText(tr("report.click_to_generate"))
         report_layout.addWidget(self.report_output)
         layout.addWidget(report_group)

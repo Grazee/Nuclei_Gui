@@ -267,6 +267,33 @@ class SettingsManager:
         self.settings.setValue("language", lang_code)
         self.settings.sync()
 
+    # ============== 通用代理配置 ==============
+
+    def get_general_proxy_config(self) -> dict:
+        """获取通用代理配置（用于加载POC、安装nuclei、请求AI、更新APP等）"""
+        # 密码从安全存储获取
+        proxy_password = self._secure_storage.retrieve("general_proxy_password") or ""
+        return {
+            "enabled": str(self.settings.value("general_proxy_enabled", "false")).lower() == "true",
+            "type": self.settings.value("general_proxy_type", "http"),
+            "server": self.settings.value("general_proxy_server", ""),
+            "username": self.settings.value("general_proxy_username", ""),
+            "password": proxy_password
+        }
+
+    def save_general_proxy_config(self, config: dict):
+        """保存通用代理配置"""
+        self.settings.setValue("general_proxy_enabled", "true" if config.get("enabled") else "false")
+        self.settings.setValue("general_proxy_type", config.get("type", "http"))
+        self.settings.setValue("general_proxy_server", config.get("server", ""))
+        self.settings.setValue("general_proxy_username", config.get("username", ""))
+        # 密码存储到安全存储
+        proxy_password = config.get("password", "")
+        if proxy_password:
+            self._secure_storage.store("general_proxy_password", proxy_password)
+        else:
+            self._secure_storage.delete("general_proxy_password")
+        self.settings.sync()
 
 
 # 全局单例
