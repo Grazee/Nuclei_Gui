@@ -1,10 +1,11 @@
 """
-POC 在线同步弹窗 - 从 nuclei-templates 同步 POC
+POC 在线同步弹窗 - 支持多仓库管理和一键同步
 """
 from PyQt5.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel,
     QPushButton, QTextEdit, QGroupBox, QProgressBar,
-    QMessageBox, QLineEdit, QCheckBox
+    QMessageBox, QLineEdit, QTableWidget, QTableWidgetItem,
+    QHeaderView, QDialogButtonBox, QFormLayout
 )
 from PyQt5.QtCore import Qt, QThread, pyqtSignal
 from PyQt5.QtGui import QFont
@@ -17,7 +18,58 @@ import urllib.request
 import tempfile
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from core.ui_scale import scaled, scaled_style
+from core.settings_manager import get_settings
 from i18n import tr
+
+
+class RepoInputDialog(QDialog):
+    """仓库信息输入对话框"""
+
+    def __init__(self, parent=None, colors=None, name="", url="", title=""):
+        super().__init__(parent)
+        self.colors = colors if colors else {}
+        self.setWindowTitle(title)
+        self.resize(scaled(500), scaled(150))
+
+        from core.fortress_style import get_dialog_stylesheet, get_button_style, get_secondary_button_style
+        self.setStyleSheet(get_dialog_stylesheet(self.colors))
+
+        layout = QVBoxLayout(self)
+        layout.setSpacing(scaled(15))
+        layout.setContentsMargins(scaled(20), scaled(20), scaled(20), scaled(20))
+
+        form_layout = QFormLayout()
+
+        self.name_input = QLineEdit()
+        self.name_input.setText(name)
+        self.name_input.setPlaceholderText(tr("poc.sync.repo_name_placeholder"))
+        self.name_input.setMinimumWidth(scaled(300))
+        form_layout.addRow(tr("poc.sync.repo_name") + ":", self.name_input)
+        
+        self.url_input = QLineEdit()
+        self.url_input.setText(url)
+        self.url_input.setPlaceholderText(tr("poc.sync.repo_url_placeholder"))
+        self.url_input.setMinimumWidth(scaled(350))
+        form_layout.addRow(tr("poc.sync.repo_url") + ":", self.url_input)
+
+        layout.addLayout(form_layout)
+
+        btn_box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        btn_ok = btn_box.button(QDialogButtonBox.Ok)
+        btn_ok.setStyleSheet(get_button_style('primary', self.colors))
+        btn_ok.setText(tr("common.confirm"))
+
+        btn_cancel = btn_box.button(QDialogButtonBox.Cancel)
+        btn_cancel.setStyleSheet(get_secondary_button_style(self.colors))
+        btn_cancel.setText(tr("common.cancel"))
+
+        btn_box.accepted.connect(self.accept)
+        btn_box.rejected.connect(self.reject)
+        layout.addWidget(btn_box)
+
+    def get_data(self):
+        """获取输入的数据"""
+        return self.name_input.text().strip(), self.url_input.text().strip()
 
 
 class SyncThread(QThread):
@@ -26,23 +78,18 @@ class SyncThread(QThread):
     progress_signal = pyqtSignal(int, int)  # 当前, 总数
     finished_signal = pyqtSignal(bool, str)  # 成功, 消息
 
-    # GitHub 仓库地址
-    REPO_URL = "https://github.com/projectdiscovery/nuclei-templates"
-    ZIP_URL = "https://github.com/projectdiscovery/nuclei-templates/archive/refs/heads/main.zip"
-
-    def __init__(self, target_dir: str, mirror_url: str = None):
+    def __init__(self, target_dir: str, repo_url: str, repo_name: str):
         super().__init__()
         self.target_dir = target_dir
-        self.mirror_url = mirror_url
+        self.repo_url = repo_url
+        self.repo_name = repo_name
         self._is_running = True
 
     def run(self):
         try:
-            # 使用镜像或官方地址
-            download_url = self.mirror_url or self.ZIP_URL
-
             self.log_signal.emit(f"[*] {tr('poc.sync.start_download')}")
-            self.log_signal.emit(tr("poc.sync.download_url", download_url=download_url))
+            self.log_signal.emit(f"[*] {tr('poc.sync.repo_name')}: {self.repo_name}")
+            self.log_signal.emit(tr("poc.sync.download_url", download_url=self.repo_url))
 
             # 创建临时目录
             temp_dir = tempfile.mkdtemp()
@@ -56,7 +103,7 @@ class SyncThread(QThread):
                     downloaded = block_num * block_size
                     self.progress_signal.emit(downloaded, total_size)
 
-            urllib.request.urlretrieve(download_url, zip_path, progress_hook)
+            urllib.request.urlretrieve(self.repo_url, zip_path, progress_hook)
 
             self.log_signal.emit(f"[*] {tr('poc.sync.download_done_extracting')}")
 
@@ -68,9 +115,17 @@ class SyncThread(QThread):
             extracted_dir = None
             for item in os.listdir(temp_dir):
                 item_path = os.path.join(temp_dir, item)
-                if os.path.isdir(item_path) and item.startswith("nuclei-templates"):
+                if os.path.isdir(item_path) and (item.startswith("nuclei-templates") or os.path.isdir(item_path)):
                     extracted_dir = item_path
                     break
+
+            if not extracted_dir:
+                # 如果没找到以 nuclei-templates 开头的目录，找第一个目录
+                for item in os.listdir(temp_dir):
+                    item_path = os.path.join(temp_dir, item)
+                    if os.path.isdir(item_path):
+                        extracted_dir = item_path
+                        break
 
             if not extracted_dir:
                 raise Exception(tr("poc.sync.template_dir_not_found"))
@@ -79,6 +134,7 @@ class SyncThread(QThread):
 
             # 统计复制的文件数
             copied_count = 0
+            skipped_count = 0
             yaml_files = []
 
             # 收集所有 YAML 文件
@@ -94,7 +150,6 @@ class SyncThread(QThread):
             os.makedirs(self.target_dir, exist_ok=True)
 
             # 复制文件（去重）
-            skipped_count = 0
             for i, src_path in enumerate(yaml_files):
                 if not self._is_running:
                     break
@@ -147,7 +202,7 @@ class SyncThread(QThread):
 class POCSyncDialog(QDialog):
     """
     POC 在线同步弹窗
-    从 nuclei-templates 官方仓库同步 POC
+    支持多仓库管理和一键同步
     """
 
     def __init__(self, target_dir: str, parent=None, colors=None):
@@ -155,14 +210,17 @@ class POCSyncDialog(QDialog):
         self.target_dir = target_dir
         self.colors = colors if colors else {}
         self.sync_thread = None
+        self.repos = []
+        self.current_repo_index = 0
+        self.sync_all_success = 0
+        self.sync_all_failed = 0
         self.init_ui()
 
     def init_ui(self):
         self.setWindowTitle(tr("poc.sync.title"))
-        self.resize(scaled(650), scaled(500))
-        self.setMinimumSize(scaled(500), scaled(350))
+        self.resize(scaled(700), scaled(700))
+        self.setMinimumSize(scaled(500), scaled(500))
 
-        # 应用 FORTRESS 样式
         # 应用 FORTRESS 样式
         from core.fortress_style import get_dialog_stylesheet, get_button_style, get_secondary_button_style
         self.setStyleSheet(get_dialog_stylesheet(self.colors))
@@ -170,6 +228,45 @@ class POCSyncDialog(QDialog):
         layout = QVBoxLayout(self)
         layout.setSpacing(scaled(15))
         layout.setContentsMargins(scaled(20), scaled(20), scaled(20), scaled(20))
+
+        # 仓库管理
+        repo_group = QGroupBox(tr("poc.sync.repo_manager"))
+        repo_layout = QVBoxLayout()
+
+        # 仓库列表表格
+        self.repo_table = QTableWidget()
+        self.repo_table.setColumnCount(2)
+        self.repo_table.setHorizontalHeaderLabels([tr("poc.sync.repo_name"), tr("poc.sync.repo_url")])
+        self.repo_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
+        self.repo_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
+        self.repo_table.setSelectionBehavior(QTableWidget.SelectRows)
+        self.repo_table.setSelectionMode(QTableWidget.SingleSelection)
+        self.repo_table.setMinimumHeight(scaled(200))
+        repo_layout.addWidget(self.repo_table)
+
+        # 仓库操作按钮
+        repo_btn_layout = QHBoxLayout()
+
+        self.btn_add_repo = QPushButton(tr("poc.sync.add_repo"))
+        self.btn_add_repo.setStyleSheet(get_button_style('primary', self.colors))
+        self.btn_add_repo.clicked.connect(self.add_repo)
+        repo_btn_layout.addWidget(self.btn_add_repo)
+
+        self.btn_edit_repo = QPushButton(tr("poc.sync.edit_repo"))
+        self.btn_edit_repo.setStyleSheet(get_button_style('info', self.colors))
+        self.btn_edit_repo.clicked.connect(self.edit_repo)
+        repo_btn_layout.addWidget(self.btn_edit_repo)
+
+        self.btn_delete_repo = QPushButton(tr("poc.sync.delete_repo"))
+        self.btn_delete_repo.setStyleSheet(get_button_style('danger', self.colors))
+        self.btn_delete_repo.clicked.connect(self.delete_repo)
+        repo_btn_layout.addWidget(self.btn_delete_repo)
+
+        repo_btn_layout.addStretch()
+        repo_layout.addLayout(repo_btn_layout)
+
+        repo_group.setLayout(repo_layout)
+        layout.addWidget(repo_group)
 
         # 说明
         info_group = QGroupBox(tr("poc.sync.info_group"))
@@ -180,18 +277,9 @@ class POCSyncDialog(QDialog):
         info_label.setWordWrap(True)
         info_layout.addWidget(info_label)
 
-        # 镜像地址（可选）
-        mirror_layout = QHBoxLayout()
-        mirror_layout.addWidget(QLabel(tr("poc.sync.custom_url")))
-        self.mirror_input = QLineEdit()
-        self.mirror_input.setPlaceholderText(tr("poc.sync.custom_url_placeholder"))
-        mirror_layout.addWidget(self.mirror_input)
-        info_layout.addLayout(mirror_layout)
-
         # 目标目录
         dir_layout = QHBoxLayout()
         dir_layout.addWidget(QLabel(tr("poc.sync.save_dir")))
-        self.dir_label = QLabel(self.target_dir)
         self.dir_label = QLabel(self.target_dir)
         btn_primary = self.colors.get('btn_primary', '#2563eb')
         self.dir_label.setStyleSheet(scaled_style(f"color: {btn_primary};"))
@@ -236,11 +324,10 @@ class POCSyncDialog(QDialog):
         # 底部按钮
         btn_layout = QHBoxLayout()
 
-        self.btn_sync = QPushButton(tr("poc.sync.start"))
-        self.btn_sync = QPushButton(tr("poc.sync.start"))
-        self.btn_sync.setStyleSheet(get_button_style('primary', self.colors))
-        self.btn_sync.clicked.connect(self.start_sync)
-        btn_layout.addWidget(self.btn_sync)
+        self.btn_sync_all = QPushButton(tr("poc.sync.sync_all"))
+        self.btn_sync_all.setStyleSheet(get_button_style('success', self.colors))
+        self.btn_sync_all.clicked.connect(self.sync_all_repos)
+        btn_layout.addWidget(self.btn_sync_all)
 
         btn_layout.addStretch()
 
@@ -251,8 +338,87 @@ class POCSyncDialog(QDialog):
 
         layout.addLayout(btn_layout)
 
-    def start_sync(self):
-        """开始同步"""
+        # 加载仓库列表
+        self.load_repos()
+
+    def load_repos(self):
+        """加载仓库列表"""
+        settings = get_settings()
+        self.repos = settings.get_poc_repos()
+        self.repo_table.setRowCount(0)
+
+        for repo in self.repos:
+            row = self.repo_table.rowCount()
+            self.repo_table.insertRow(row)
+            self.repo_table.setItem(row, 0, QTableWidgetItem(repo.get("name", "")))
+            self.repo_table.setItem(row, 1, QTableWidgetItem(repo.get("url", "")))
+
+    def add_repo(self):
+        """添加仓库"""
+        dialog = RepoInputDialog(self, self.colors, "", "", tr("poc.sync.add_repo"))
+        if dialog.exec_() == QDialog.Accepted:
+            name, url = dialog.get_data()
+            if not name:
+                QMessageBox.warning(self, tr("msg.warning"), tr("poc.sync.repo_name_required"))
+                return
+            if not url:
+                QMessageBox.warning(self, tr("msg.warning"), tr("poc.sync.repo_url_required"))
+                return
+
+            self.repos.append({"name": name, "url": url})
+            self.save_repos()
+            self.load_repos()
+
+    def edit_repo(self):
+        """编辑仓库"""
+        selected_row = self.repo_table.currentRow()
+        if selected_row < 0 or selected_row >= len(self.repos):
+            return
+
+        repo = self.repos[selected_row]
+        dialog = RepoInputDialog(self, self.colors, repo.get("name", ""), repo.get("url", ""), tr("poc.sync.edit_repo"))
+        if dialog.exec_() == QDialog.Accepted:
+            name, url = dialog.get_data()
+            if not name:
+                QMessageBox.warning(self, tr("msg.warning"), tr("poc.sync.repo_name_required"))
+                return
+            if not url:
+                QMessageBox.warning(self, tr("msg.warning"), tr("poc.sync.repo_url_required"))
+                return
+
+            self.repos[selected_row] = {"name": name, "url": url}
+            self.save_repos()
+            self.load_repos()
+
+    def delete_repo(self):
+        """删除仓库"""
+        selected_row = self.repo_table.currentRow()
+        if selected_row < 0 or selected_row >= len(self.repos):
+            return
+
+        repo = self.repos[selected_row]
+        reply = QMessageBox.question(
+            self, tr("msg.confirm"),
+            tr("poc.sync.confirm_delete_repo", name=repo.get("name", "")),
+            QMessageBox.Yes | QMessageBox.No
+        )
+
+        if reply == QMessageBox.Yes:
+            del self.repos[selected_row]
+            self.save_repos()
+            self.load_repos()
+
+    def save_repos(self):
+        """保存仓库列表"""
+        settings = get_settings()
+        settings.save_poc_repos(self.repos)
+
+    def sync_all_repos(self):
+        """一键同步所有仓库"""
+        if not self.repos:
+            QMessageBox.warning(self, tr("msg.warning"), tr("poc.sync.repo_url_required"))
+            return
+
         reply = QMessageBox.question(
             self, tr("poc.sync.confirm_title"),
             tr("poc.sync.confirm_body", target_dir=self.target_dir),
@@ -262,17 +428,64 @@ class POCSyncDialog(QDialog):
         if reply != QMessageBox.Yes:
             return
 
-        self.btn_sync.setEnabled(False)
-        self.btn_sync.setText(tr("poc.sync.syncing"))
+        self.btn_sync_all.setEnabled(False)
+        self.btn_add_repo.setEnabled(False)
+        self.btn_edit_repo.setEnabled(False)
+        self.btn_delete_repo.setEnabled(False)
         self.log_text.clear()
 
-        mirror = self.mirror_input.text().strip() or None
+        self.sync_all_success = 0
+        self.sync_all_failed = 0
+        self.current_repo_index = 0
 
-        self.sync_thread = SyncThread(self.target_dir, mirror)
+        self.sync_next_repo()
+
+    def sync_next_repo(self):
+        """同步下一个仓库"""
+        if self.current_repo_index >= len(self.repos):
+            # 所有仓库同步完成
+            self.on_sync_all_finished()
+            return
+
+        repo = self.repos[self.current_repo_index]
+        self.log_text.append(f"\n{'='*50}")
+        self.log_text.append(f"[{self.current_repo_index + 1}/{len(self.repos)}] {repo.get('name')}")
+        self.log_text.append('='*50)
+
+        self.sync_thread = SyncThread(self.target_dir, repo.get("url"), repo.get("name"))
         self.sync_thread.log_signal.connect(self.append_log)
         self.sync_thread.progress_signal.connect(self.update_progress)
-        self.sync_thread.finished_signal.connect(self.on_sync_finished)
+        self.sync_thread.finished_signal.connect(self.on_single_repo_finished)
         self.sync_thread.start()
+
+    def on_single_repo_finished(self, success, message):
+        """单个仓库同步完成"""
+        if success:
+            self.sync_all_success += 1
+        else:
+            self.sync_all_failed += 1
+
+        self.current_repo_index += 1
+        self.sync_next_repo()
+
+    def on_sync_all_finished(self):
+        """所有仓库同步完成"""
+        self.btn_sync_all.setEnabled(True)
+        self.btn_add_repo.setEnabled(True)
+        self.btn_edit_repo.setEnabled(True)
+        self.btn_delete_repo.setEnabled(True)
+
+        self.log_text.append(f"\n{'='*50}")
+        self.log_text.append(tr("poc.sync.sync_all_success"))
+        self.log_text.append(f"成功: {self.sync_all_success}")
+        if self.sync_all_failed > 0:
+            self.log_text.append(f"失败: {self.sync_all_failed}")
+        self.log_text.append('='*50)
+
+        if self.sync_all_failed > 0:
+            QMessageBox.warning(self, tr("msg.failed"), tr("poc.sync.sync_all_failed"))
+        else:
+            QMessageBox.information(self, tr("msg.success"), tr("poc.sync.sync_all_success"))
 
     def append_log(self, text):
         """追加日志"""
@@ -283,13 +496,3 @@ class POCSyncDialog(QDialog):
         if total > 0:
             percent = int(current * 100 / total)
             self.progress_bar.setValue(percent)
-
-    def on_sync_finished(self, success, message):
-        """同步完成"""
-        self.btn_sync.setEnabled(True)
-        self.btn_sync.setText(tr("poc.sync.start"))
-
-        if success:
-            QMessageBox.information(self, tr("msg.success"), message)
-        else:
-            QMessageBox.warning(self, tr("msg.failed"), tr("poc.sync.failed", error=message))

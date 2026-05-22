@@ -15,7 +15,7 @@ class SettingsManager:
     统一设置管理器
     使用 QSettings 持久化存储配置
     """
-    
+
     # AI 模型预设模板
     DEFAULT_AI_PRESETS = [
         {
@@ -49,11 +49,11 @@ class SettingsManager:
             "api_key": ""
         }
     ]
-    
+
     def __init__(self):
         self.settings = QSettings("Antigravity", "NucleiGUI")
         self._secure_storage = get_secure_storage()
-    
+
     # ============== AI 配置 ==============
 
     def get_ai_presets(self) -> list:
@@ -91,16 +91,16 @@ class SettingsManager:
 
         self.settings.setValue("ai_presets", json.dumps(presets_to_save, ensure_ascii=False))
         self.settings.sync()  # 强制同步到磁盘
-    
+
     def get_current_ai_preset_index(self) -> int:
         """获取当前选中的 AI 预设索引"""
         return int(self.settings.value("ai_current_index", 0))
-    
+
     def set_current_ai_preset_index(self, index: int):
         """设置当前选中的 AI 预设索引"""
         self.settings.setValue("ai_current_index", index)
         self.settings.sync()  # 强制同步到磁盘
-    
+
     def get_current_ai_config(self) -> dict:
         """获取当前 AI 配置"""
         presets = self.get_ai_presets()
@@ -108,7 +108,7 @@ class SettingsManager:
         if 0 <= index < len(presets):
             return presets[index]
         return presets[0] if presets else {}
-    
+
     # ============== FOFA 配置 ==============
 
     def get_fofa_config(self) -> dict:
@@ -134,9 +134,9 @@ class SettingsManager:
             self._secure_storage.delete("fofa_api_key")
         self.settings.setValue("fofa_page_size", config.get("page_size", 100))
         self.settings.sync()  # 强制同步到磁盘，确保配置不会丢失
-    
+
     # ============== 扫描参数配置 ==============
-    
+
     def get_scan_config(self) -> dict:
         """获取扫描默认参数"""
         return {
@@ -159,7 +159,7 @@ class SettingsManager:
             "oast_eviction": int(self.settings.value("scan_oast_eviction", 60)),
             "oast_adapt_legacy": str(self.settings.value("scan_oast_adapt_legacy", "true")).lower() == "true"
         }
-    
+
     def save_scan_config(self, config: dict):
         """保存扫描默认参数"""
         self.settings.setValue("scan_rate_limit", config.get("rate_limit", 150))
@@ -181,7 +181,7 @@ class SettingsManager:
         self.settings.setValue("scan_oast_eviction", config.get("oast_eviction", 60))
         self.settings.setValue("scan_oast_adapt_legacy", "true" if config.get("oast_adapt_legacy", True) else "false")
         self.settings.sync()  # 强制同步到磁盘
-    
+
     # ============== 主题配置 ==============
 
     # 旧中文主题名 → 新英文内部 key 的迁移映射
@@ -200,14 +200,14 @@ class SettingsManager:
             theme = self._THEME_MIGRATION[theme]
             self.save_current_theme(theme)
         return theme
-    
+
     def save_current_theme(self, theme_name: str):
         """保存当前主题名称"""
         self.settings.setValue("theme_name", theme_name)
         self.settings.sync()  # 强制同步到磁盘
-    
+
     # ============== 窗口配置 ==============
-    
+
     def get_window_geometry(self) -> dict:
         """获取保存的窗口几何信息"""
         return {
@@ -217,7 +217,7 @@ class SettingsManager:
             "height": int(self.settings.value("window_height", -1)),
             "maximized": str(self.settings.value("window_maximized", "false")).lower() == "true"
         }
-    
+
     def save_window_geometry(self, x: int, y: int, width: int, height: int, maximized: bool = False):
         """保存窗口几何信息"""
         self.settings.setValue("window_x", x)
@@ -293,6 +293,34 @@ class SettingsManager:
             self._secure_storage.store("general_proxy_password", proxy_password)
         else:
             self._secure_storage.delete("general_proxy_password")
+        self.settings.sync()
+
+    # ============== POC 仓库配置 ==============
+
+    # 默认仓库列表
+    DEFAULT_POC_REPOS = [
+        {
+            "name": "Nuclei官方仓库",
+            "url": "https://github.com/projectdiscovery/nuclei-templates/archive/refs/heads/main.zip"
+        }
+    ]
+
+    def get_poc_repos(self) -> list:
+        """获取 POC 仓库列表"""
+        repos_json = self.settings.value("poc_repos", None)
+        repos = None
+        if repos_json:
+            try:
+                repos = json.loads(repos_json)
+            except json.JSONDecodeError:
+                pass
+        if repos is None or not isinstance(repos, list):
+            repos = [r.copy() for r in self.DEFAULT_POC_REPOS]
+        return repos
+
+    def save_poc_repos(self, repos: list):
+        """保存 POC 仓库列表"""
+        self.settings.setValue("poc_repos", json.dumps(repos, ensure_ascii=False))
         self.settings.sync()
 
 
