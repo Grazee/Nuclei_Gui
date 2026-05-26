@@ -8,7 +8,7 @@ from core.paths import ensure_external_layout, external_path, user_data_path
 
 class POCLibrary:
     """POC 库管理器 - 负责 POC 的导入、存储和读取"""
-    
+
     def __init__(self, library_path: str = None):
         # 默认使用当前目录下的 poc_library 文件夹
         if library_path is None:
@@ -16,29 +16,29 @@ class POCLibrary:
             self.library_path = external_path("poc_library")
         else:
             self.library_path = Path(library_path)
-        
+
         # 用户自定义 POC 目录
         self.custom_path = self.library_path / "custom"
         # 云端同步 POC 目录
         self.cloud_path = self.library_path / "cloud"
         # 用户生成的 POC 目录
         self.user_generated_path = self.library_path / "user_generated"
-        
+
         # 确保目录存在
         self.library_path.mkdir(parents=True, exist_ok=True)
         self.custom_path.mkdir(parents=True, exist_ok=True)
         self.cloud_path.mkdir(parents=True, exist_ok=True)
         self.user_generated_path.mkdir(parents=True, exist_ok=True)
-        
+
         # POC 缓存
         self._poc_cache = None
         self._cache_valid = False
         self._cache_file = user_data_path("cache", "poc_index.json")
-    
+
     def get_poc_count(self) -> int:
         """快速获取 POC 数量（不解析内容，仅计数文件）"""
         return sum(1 for _ in self._iter_poc_files())
-    
+
     def invalidate_cache(self):
         """使缓存失效"""
         self._cache_valid = False
@@ -60,6 +60,44 @@ class POCLibrary:
 
             seen.add(cache_key)
             yield file, self._get_source_for_path(file)
+
+    def _get_all_poc_files(self, severity_filter: str = None) -> list:
+        """获取POC文件路径列表（不解析内容，用于分页）
+
+        参数:
+            severity_filter: 严重程度筛选，可选值: critical, high, medium, low, info, None表示不筛选
+        """
+        files = []
+        seen = set()
+        if not self.library_path.exists():
+            return files
+
+        # 定义有效的严重程度目录名
+        valid_severities = {'critical', 'high', 'medium', 'low', 'info', 'other'}
+
+        for file in self.library_path.rglob("*"):
+            if not file.is_file() or file.suffix.lower() not in (".yaml", ".yml"):
+                continue
+
+            # 如果有severity筛选，检查文件是否在对应的severity目录下
+            if severity_filter:
+                # 获取文件所在的目录名（可能是severity目录）
+                parent_dir = file.parent.name.lower()
+                # 检查是否匹配筛选的severity
+                if parent_dir != severity_filter.lower():
+                    # 也检查祖父目录（处理嵌套情况）
+                    grandparent_dir = file.parent.parent.name.lower() if file.parent.parent else ''
+                    if grandparent_dir != severity_filter.lower():
+                        continue
+
+            cache_key = str(file.resolve())
+            if cache_key in seen:
+                continue
+
+            seen.add(cache_key)
+            files.append((file, self._get_source_for_path(file)))
+
+        return files
 
     def _get_source_for_path(self, path: Path) -> str:
         """根据 POC 路径返回兼容旧逻辑的来源标记"""
@@ -159,7 +197,7 @@ class POCLibrary:
                 "folder_label": poc.get("folder_label", ""),
             },
         }
-    
+
     def import_poc(self, source_file: str, auto_sync: bool = True) -> dict:
         """
         导入 POC 文件（保存到 custom 目录）
@@ -168,29 +206,29 @@ class POCLibrary:
         :return: 导入结果信息
         """
         source = Path(source_file)
-        
+
         # 验证文件
         if not source.exists():
             return {"success": False, "error": tr("poc.file_not_found")}
-        
+
         if source.suffix not in ['.yaml', '.yml']:
             return {"success": False, "error": tr("poc.must_be_yaml")}
-        
+
         # 解析模板获取信息
         poc_info = self._parse_poc(source)
         if not poc_info:
             return {"success": False, "error": tr("poc.invalid_template_format")}
-        
+
         final_path = source
-        
+
         if auto_sync:
             # 复制到 custom 目录
             dest = self.custom_path / source.name
-            
+
             # 如果已存在，自动重命名
             if dest.exists():
                 dest = self._get_unique_name(dest)
-            
+
             try:
                 shutil.copy2(source, dest)
                 final_path = dest
@@ -205,17 +243,80 @@ class POCLibrary:
             poc_info["synced_path"] = str(source)
             poc_info["is_synced"] = False
             poc_info["source"] = "custom"
-        
+
         poc_info["success"] = True
         return poc_info
 
-    def get_all_pocs(self, use_cache: bool = True) -> list:
+    def get_all_pocs(self, use_cache: bool = True, force_refresh: bool = False, severity_filter: str = None) -> list:
         """获取库中所有 POC（包括 custom、cloud 和 user_generated）
 
         参数:
             use_cache: 是否使用缓存，默认为 True
+            force_refresh: 是否强制刷新缓存（忽略缓存），默认为 False
+            severity_filter: 严重程度筛选，可选值: critical, high, medium, low, info, None表示不筛选
         """
-        # 如果缓存有效且允许使用缓存，直接返回
+        # 如果强制刷新，跳过缓存
+        if force_refresh:
+            self.invalidate_cache()
+
+        # 如果有severity筛选，不使用内存缓存，直接从磁盘加载对应目录的文件
+        # 这样可以确保每次选择不同的severity时都能正确加载对应的文件
+        if severity_filter:
+            # 从磁盘加载对应severity目录的文件
+            disk_cache = self._load_persistent_cache()
+            next_cache = {}
+            pocs = []
+
+            files = self._get_all_poc_files(severity_filter=severity_filter)
+
+            for file, source in files:
+                try:
+                    stat_result = file.stat()
+                except OSError:
+                    continue
+
+                cache_key = str(file.resolve())
+                cache_entry = disk_cache.get(cache_key)
+
+                if (
+                    not force_refresh
+                    and isinstance(cache_entry, dict)
+                    and cache_entry.get("mtime_ns") == stat_result.st_mtime_ns
+                    and cache_entry.get("size") == stat_result.st_size
+                ):
+                    info = cache_entry.get("info")
+                    if isinstance(info, dict):
+                        # 确保path字段存在
+                        if "path" not in info:
+                            info["path"] = str(file)
+                        self._add_folder_metadata(info, file)
+                        next_cache[cache_key] = cache_entry
+                        pocs.append(info)
+                        continue
+
+                info = self._parse_poc(file)
+                if not info:
+                    continue
+
+                # 添加来源标记
+                info["source"] = source
+                self._add_folder_metadata(info, file)
+
+                # 更新磁盘缓存
+                next_cache[cache_key] = {
+                    "mtime_ns": stat_result.st_mtime_ns,
+                    "size": stat_result.st_size,
+                    "info": info
+                }
+
+                pocs.append(info)
+
+            # 保存磁盘缓存
+            self._save_persistent_cache(next_cache)
+
+            return pocs
+
+        # 如果没有severity筛选，使用内存缓存
         if use_cache and self._cache_valid and self._poc_cache is not None:
             return self._poc_cache
 
@@ -223,7 +324,10 @@ class POCLibrary:
         next_cache = {}
         pocs = []
 
-        for file, source in self._iter_poc_files():
+        # 获取文件（支持按severity筛选）
+        files = self._get_all_poc_files(severity_filter=severity_filter)
+
+        for file, source in files:
             try:
                 stat_result = file.stat()
             except OSError:
@@ -233,7 +337,96 @@ class POCLibrary:
             cache_entry = disk_cache.get(cache_key)
 
             if (
-                isinstance(cache_entry, dict)
+                not force_refresh
+                and isinstance(cache_entry, dict)
+                and cache_entry.get("mtime_ns") == stat_result.st_mtime_ns
+                and cache_entry.get("size") == stat_result.st_size
+            ):
+                info = cache_entry.get("info")
+                if isinstance(info, dict):
+                    # 确保path字段存在
+                    if "path" not in info:
+                        info["path"] = str(file)
+                    self._add_folder_metadata(info, file)
+                    next_cache[cache_key] = cache_entry
+                    pocs.append(info)
+                    continue
+
+            info = self._parse_poc(file)
+            if not info:
+                continue
+
+            info["source"] = source
+            self._add_folder_metadata(info, file)
+            pocs.append(info)
+            next_cache[cache_key] = self._serialize_poc_info(info, file, source, stat_result)
+
+        pocs.sort(key=lambda item: (item.get("id", ""), item.get("name", "")))
+        self._save_persistent_cache(next_cache)
+
+        # 更新缓存
+        self._poc_cache = pocs
+        self._cache_valid = True
+
+        return pocs
+
+    def get_pocs_paginated(self, page: int, page_size: int, use_cache: bool = True, force_refresh: bool = False, severity_filter: str = None) -> tuple:
+        """分页获取POC列表
+
+        参数:
+            page: 页码（从1开始）
+            page_size: 每页大小
+            use_cache: 是否使用缓存，默认为 True
+            force_refresh: 是否强制刷新缓存（忽略缓存），默认为 False
+            severity_filter: 严重程度筛选，可选值: critical, high, medium, low, info, None表示不筛选
+
+        返回:
+            tuple: (pocs, total_count)
+        """
+        # 如果强制刷新，跳过缓存
+        if force_refresh:
+            self.invalidate_cache()
+
+        # 如果缓存有效且允许使用缓存，直接从缓存分页（支持按severity筛选）
+        if use_cache and self._cache_valid and self._poc_cache is not None:
+            # 如果有severity筛选，先过滤缓存
+            if severity_filter:
+                filtered_cache = [poc for poc in self._poc_cache if poc.get('severity', '').lower() == severity_filter.lower()]
+                total = len(filtered_cache)
+                start = (page - 1) * page_size
+                end = start + page_size
+                return filtered_cache[start:end], total
+            else:
+                total = len(self._poc_cache)
+                start = (page - 1) * page_size
+                end = start + page_size
+                return self._poc_cache[start:end], total
+
+        # 获取文件（支持按severity筛选）
+        all_files = self._get_all_poc_files(severity_filter=severity_filter)
+        total = len(all_files)
+
+        # 计算分页范围
+        start = (page - 1) * page_size
+        end = min(start + page_size, total)
+
+        # 只解析当前页需要的文件
+        disk_cache = self._load_persistent_cache()
+        next_cache = {}
+        pocs = []
+
+        for file, source in all_files[start:end]:
+            try:
+                stat_result = file.stat()
+            except OSError:
+                continue
+
+            cache_key = str(file.resolve())
+            cache_entry = disk_cache.get(cache_key)
+
+            if (
+                not force_refresh
+                and isinstance(cache_entry, dict)
                 and cache_entry.get("mtime_ns") == stat_result.st_mtime_ns
                 and cache_entry.get("size") == stat_result.st_size
             ):
@@ -254,15 +447,13 @@ class POCLibrary:
             pocs.append(info)
             next_cache[cache_key] = self._serialize_poc_info(info, file, source, stat_result)
 
-        pocs.sort(key=lambda item: (item.get("id", ""), item.get("name", "")))
-        self._save_persistent_cache(next_cache)
+        # 保存更新后的缓存
+        if next_cache:
+            disk_cache.update(next_cache)
+            self._save_persistent_cache(disk_cache)
 
-        # 更新缓存
-        self._poc_cache = pocs
-        self._cache_valid = True
+        return pocs, total
 
-        return pocs
-    
     def delete_poc(self, file_path: str) -> bool:
         """删除库中的 POC"""
         try:
@@ -281,10 +472,10 @@ class POCLibrary:
         try:
             with open(path, 'r', encoding='utf-8') as f:
                 data = yaml.safe_load(f)
-            
+
             if not data or 'id' not in data or 'info' not in data:
                 return None
-            
+
             return {
                 "id": data.get("id", "unknown"),
                 "name": data["info"].get("name", tr("poc.unnamed")),
@@ -292,22 +483,23 @@ class POCLibrary:
                 "severity": data["info"].get("severity", "unknown"),
                 "description": data["info"].get("description", ""),
                 "tags": data["info"].get("tags", ""),
-                "filename": path.name
+                "filename": path.name,
+                "path": str(path)
             }
         except Exception as e:
             print(f"[!] {tr('poc.parse_error', path=str(path), e=str(e))}")
             return None
-    
+
     def _get_unique_name(self, path: Path) -> Path:
         """生成唯一文件名"""
         counter = 1
         stem = path.stem
         suffix = path.suffix
         parent = path.parent
-        
+
         new_path = path
         while new_path.exists():
             new_path = parent / f"{stem}_{counter}{suffix}"
             counter += 1
-        
+
         return new_path

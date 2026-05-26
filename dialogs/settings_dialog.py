@@ -30,7 +30,7 @@ class NucleiDownloadThread(QThread):
     progress_signal = pyqtSignal(str)
     progress_percent_signal = pyqtSignal(int)
     finished_signal = pyqtSignal(bool, str)
-    
+
     def run(self):
         try:
             self.progress_signal.emit(tr("settings.nuclei.checking"))
@@ -47,7 +47,7 @@ class NucleiDownloadThread(QThread):
                 self.finished_signal.emit(True, tr("settings.nuclei.install_success"))
             else:
                 self.finished_signal.emit(False, tr("settings.nuclei.install_failed"))
-                
+
         except Exception as e:
             self.finished_signal.emit(False, tr("settings.nuclei.download_error", error=str(e)))
 
@@ -57,20 +57,20 @@ class SettingsDialog(QDialog):
     统一设置弹窗
     包含 AI 配置、FOFA 配置、扫描参数、Nuclei 管理四个 Tab 页
     """
-    
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.settings = get_settings()
         self.init_ui()
         self.load_settings()
-    
+
     def init_ui(self):
         self.setWindowTitle(tr("settings.title"))
         self.resize(scaled(600), scaled(500))
         self.setMinimumSize(scaled(500), scaled(400))
-        
+
         layout = QVBoxLayout(self)
-        
+
         # 创建 Tab 页
         self.tabs = QTabWidget()
 
@@ -105,26 +105,26 @@ class SettingsDialog(QDialog):
         self.tabs.addTab(self.update_tab, tr("settings.tab.update"))
 
         layout.addWidget(self.tabs)
-        
+
         # 底部按钮
         btn_layout = QHBoxLayout()
         btn_layout.addStretch()
-        
+
         btn_save = QPushButton(tr("common.save"))
         btn_save.setStyleSheet(scaled_style("background-color: #27ae60; color: white; font-weight: bold; padding: 8px 20px;"))
         btn_save.clicked.connect(self.save_and_close)
         btn_layout.addWidget(btn_save)
-        
+
         btn_cancel = QPushButton(tr("common.cancel"))
         btn_cancel.clicked.connect(self.reject)
         btn_layout.addWidget(btn_cancel)
-        
+
         layout.addLayout(btn_layout)
-    
+
     def setup_ai_tab(self):
         """设置 AI 配置页面"""
         layout = QVBoxLayout(self.ai_tab)
-        
+
         # 简化的 AI 配置
         config_group = QGroupBox(tr("settings.ai.group_title"))
         config_layout = QFormLayout()
@@ -141,15 +141,15 @@ class SettingsDialog(QDialog):
         self.ai_model_input = QLineEdit()
         self.ai_model_input.setPlaceholderText("deepseek-chat")
         config_layout.addRow(tr("settings.ai.model"), self.ai_model_input)
-        
+
         config_group.setLayout(config_layout)
         layout.addWidget(config_group)
         layout.addStretch()
-    
+
     def setup_fofa_tab(self):
         """设置 FOFA 配置页面"""
         layout = QVBoxLayout(self.fofa_tab)
-        
+
         config_group = QGroupBox(tr("settings.fofa.group_title"))
         config_layout = QFormLayout()
 
@@ -165,15 +165,15 @@ class SettingsDialog(QDialog):
         self.fofa_key_input.setEchoMode(QLineEdit.Password)
         self.fofa_key_input.setPlaceholderText("FOFA API Key")
         config_layout.addRow(tr("settings.fofa.api_key"), self.fofa_key_input)
-        
+
         config_group.setLayout(config_layout)
         layout.addWidget(config_group)
         layout.addStretch()
-    
+
     def setup_scan_tab(self):
         """设置扫描参数页面"""
         layout = QVBoxLayout(self.scan_tab)
-        
+
         # 基础参数
         basic_group = QGroupBox(tr("settings.scan.basic_params"))
         basic_layout = QGridLayout()
@@ -183,21 +183,21 @@ class SettingsDialog(QDialog):
         self.scan_rate_spin.setRange(1, 1000)
         self.scan_rate_spin.setValue(150)
         basic_layout.addWidget(self.scan_rate_spin, 0, 1)
-        
+
         basic_layout.addWidget(QLabel(tr("settings.scan.bulk_size")), 0, 2)
         self.scan_bulk_spin = QSpinBox()
         self.scan_bulk_spin.setRange(1, 100)
         self.scan_bulk_spin.setValue(25)
         basic_layout.addWidget(self.scan_bulk_spin, 0, 3)
-        
+
         basic_group.setLayout(basic_layout)
         layout.addWidget(basic_group)
         layout.addStretch()
-    
+
     def setup_nuclei_tab(self):
         """设置 Nuclei 管理页面"""
         layout = QVBoxLayout(self.nuclei_tab)
-        
+
         # 系统信息
         info_group = QGroupBox(tr("settings.nuclei.system_info"))
         info_layout = QGridLayout()
@@ -207,25 +207,25 @@ class SettingsDialog(QDialog):
         machine = platform.machine()
         info_layout.addWidget(QLabel(tr("settings.nuclei.os")), 0, 0)
         info_layout.addWidget(QLabel(f"{system} {machine}"), 0, 1)
-        
+
         info_layout.addWidget(QLabel(tr("settings.nuclei.status")), 1, 0)
         self.nuclei_status_label = QLabel(tr("settings.nuclei.detecting"))
         info_layout.addWidget(self.nuclei_status_label, 1, 1)
-        
+
         info_group.setLayout(info_layout)
         layout.addWidget(info_group)
-        
+
         # Nuclei 下载管理
         download_group = QGroupBox(tr("settings.nuclei.download_mgmt"))
         download_layout = QVBoxLayout()
-        
+
         desc_label = QLabel(tr("settings.nuclei.description_html"))
         desc_label.setStyleSheet(scaled_style("color: #34495e; font-size: 12px; padding: 10px;"))
         download_layout.addWidget(desc_label)
-        
+
         # 下载按钮
         btn_layout = QHBoxLayout()
-        
+
         self.download_btn = QPushButton(tr("settings.nuclei.check_install"))
         self.download_btn.setStyleSheet(scaled_style("""
             QPushButton {
@@ -246,7 +246,7 @@ class SettingsDialog(QDialog):
         """))
         self.download_btn.clicked.connect(self.download_nuclei)
         btn_layout.addWidget(self.download_btn)
-        
+
         self.check_btn = QPushButton(tr("settings.nuclei.detect"))
         self.check_btn.setStyleSheet(scaled_style("""
             QPushButton {
@@ -264,9 +264,9 @@ class SettingsDialog(QDialog):
         """))
         self.check_btn.clicked.connect(self.check_nuclei_status)
         btn_layout.addWidget(self.check_btn)
-        
+
         download_layout.addLayout(btn_layout)
-        
+
         # 进度条
         self.progress_bar = QProgressBar()
         self.progress_bar.setVisible(False)
@@ -283,28 +283,28 @@ class SettingsDialog(QDialog):
             }
         """))
         download_layout.addWidget(self.progress_bar)
-        
+
         # 进度显示
         self.progress_label = QLabel("")
         self.progress_label.setStyleSheet(scaled_style("color: #7f8c8d; font-size: 11px; padding: 5px;"))
         download_layout.addWidget(self.progress_label)
-        
+
         download_group.setLayout(download_layout)
         layout.addWidget(download_group)
-        
+
         layout.addStretch()
-        
+
         # 初始检测
         self.check_nuclei_status()
-    
+
     def check_nuclei_status(self):
         """检测 Nuclei 状态"""
         try:
             from core.nuclei_runner import get_nuclei_path
             import os
-            
+
             nuclei_path = get_nuclei_path()
-            
+
             if os.path.exists(nuclei_path):
                 self.nuclei_status_label.setText(tr("settings.nuclei.installed"))
                 self.nuclei_status_label.setStyleSheet(scaled_style("color: #27ae60; font-weight: bold;"))
@@ -317,25 +317,25 @@ class SettingsDialog(QDialog):
         except Exception as e:
             self.nuclei_status_label.setText(tr("settings.nuclei.detect_failed", error=str(e)))
             self.nuclei_status_label.setStyleSheet(scaled_style("color: #e74c3c; font-weight: bold;"))
-    
+
     def download_nuclei(self):
         """下载 Nuclei"""
         self.download_btn.setEnabled(False)
         self.progress_label.setText(tr("settings.nuclei.preparing_download"))
         self.progress_bar.setVisible(True)
         self.progress_bar.setValue(0)
-        
+
         self.download_thread = NucleiDownloadThread()
         self.download_thread.progress_signal.connect(self.progress_label.setText)
         self.download_thread.progress_percent_signal.connect(self.progress_bar.setValue)
         self.download_thread.finished_signal.connect(self.on_download_finished)
         self.download_thread.start()
-    
+
     def on_download_finished(self, success, message):
         """下载完成回调"""
         self.download_btn.setEnabled(True)
         self.progress_bar.setVisible(False)
-        
+
         if success:
             QMessageBox.information(self, tr("msg.success"), message)
             self.progress_label.setText(tr("settings.nuclei.download_complete"))
@@ -343,7 +343,7 @@ class SettingsDialog(QDialog):
         else:
             QMessageBox.critical(self, tr("msg.failed"), message)
             self.progress_label.setText(tr("settings.nuclei.download_failed"))
-    
+
     def load_settings(self):
         """加载设置"""
         # 加载语言设置
@@ -357,6 +357,27 @@ class SettingsDialog(QDialog):
         auto_update = self.settings.get_auto_check_update()
         self.auto_update_checkbox.setChecked(auto_update)
 
+        # 加载代理设置
+        proxy_config = self.settings.get_general_proxy_config()
+        self.proxy_enabled_checkbox.setChecked(proxy_config.get("enabled", False))
+
+        # 设置代理类型
+        proxy_type = proxy_config.get("type", "http")
+        type_index = self.proxy_type_combo.findText(proxy_type)
+        if type_index >= 0:
+            self.proxy_type_combo.setCurrentIndex(type_index)
+
+        # 解析服务器地址（格式：host:port）
+        server = proxy_config.get("server", "")
+        if server and ":" in server:
+            parts = server.rsplit(":", 1)
+            self.proxy_host_input.setText(parts[0])
+            self.proxy_port_input.setText(parts[1])
+
+        # 用户名和密码
+        self.proxy_username_input.setText(proxy_config.get("username", ""))
+        self.proxy_password_input.setText(proxy_config.get("password", ""))
+
     def save_and_close(self):
         """保存设置并关闭"""
         # 保存语言设置
@@ -368,6 +389,30 @@ class SettingsDialog(QDialog):
 
         # 保存更新设置
         self.settings.set_auto_check_update(self.auto_update_checkbox.isChecked())
+
+        # 保存代理设置
+        proxy_host = self.proxy_host_input.text().strip()
+        proxy_port = self.proxy_port_input.text().strip()
+        proxy_server = f"{proxy_host}:{proxy_port}" if proxy_host and proxy_port else ""
+
+        proxy_config = {
+            "enabled": self.proxy_enabled_checkbox.isChecked(),
+            "type": self.proxy_type_combo.currentText(),
+            "server": proxy_server,
+            "username": self.proxy_username_input.text().strip(),
+            "password": self.proxy_password_input.text()
+        }
+        self.settings.save_general_proxy_config(proxy_config)
+
+        # 应用代理设置
+        from core.proxy_manager import set_proxy_config
+        set_proxy_config(
+            enabled=proxy_config["enabled"],
+            proxy_type=proxy_config["type"],
+            server=proxy_config["server"],
+            username=proxy_config["username"],
+            password=proxy_config["password"]
+        )
 
         if new_lang != old_lang:
             init_language(new_lang)
@@ -396,6 +441,48 @@ class SettingsDialog(QDialog):
 
         lang_group.setLayout(lang_layout)
         layout.addWidget(lang_group)
+
+        # 代理设置
+        proxy_group = QGroupBox(tr("settings.general.proxy_group"))
+        proxy_layout = QGridLayout()
+
+        # 启用代理复选框
+        self.proxy_enabled_checkbox = QCheckBox(tr("settings.general.enable_proxy"))
+        proxy_layout.addWidget(self.proxy_enabled_checkbox, 0, 0, 1, 3)
+
+        # 代理类型
+        proxy_layout.addWidget(QLabel(tr("settings.general.proxy_type")), 1, 0)
+        self.proxy_type_combo = QComboBox()
+        self.proxy_type_combo.addItems(["http", "https", "socks5"])
+        proxy_layout.addWidget(self.proxy_type_combo, 1, 1, 1, 2)
+
+        # 代理服务器（主机名和端口在同一行）
+        proxy_layout.addWidget(QLabel(tr("settings.general.proxy_server")), 2, 0)
+        server_layout = QHBoxLayout()
+        self.proxy_host_input = QLineEdit()
+        self.proxy_host_input.setPlaceholderText("127.0.0.1")
+        server_layout.addWidget(self.proxy_host_input)
+        self.proxy_port_input = QLineEdit()
+        self.proxy_port_input.setPlaceholderText("7890")
+        self.proxy_port_input.setMaximumWidth(scaled(80))
+        server_layout.addWidget(self.proxy_port_input)
+        proxy_layout.addLayout(server_layout, 2, 1, 1, 2)
+
+        # 用户名
+        proxy_layout.addWidget(QLabel(tr("settings.general.proxy_username")), 3, 0)
+        self.proxy_username_input = QLineEdit()
+        self.proxy_username_input.setPlaceholderText(tr("settings.general.proxy_username_placeholder"))
+        proxy_layout.addWidget(self.proxy_username_input, 3, 1, 1, 2)
+
+        # 密码
+        proxy_layout.addWidget(QLabel(tr("settings.general.proxy_password")), 4, 0)
+        self.proxy_password_input = QLineEdit()
+        self.proxy_password_input.setEchoMode(QLineEdit.Password)
+        self.proxy_password_input.setPlaceholderText(tr("settings.general.proxy_password_placeholder"))
+        proxy_layout.addWidget(self.proxy_password_input, 4, 1, 1, 2)
+
+        proxy_group.setLayout(proxy_layout)
+        layout.addWidget(proxy_group)
         layout.addStretch()
 
     def setup_update_tab(self):

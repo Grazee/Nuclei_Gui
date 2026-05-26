@@ -16,6 +16,8 @@ import zipfile
 import shutil
 import urllib.request
 import tempfile
+import yaml
+import re
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from core.ui_scale import scaled, scaled_style
 from core.settings_manager import get_settings
@@ -45,7 +47,7 @@ class RepoInputDialog(QDialog):
         self.name_input.setPlaceholderText(tr("poc.sync.repo_name_placeholder"))
         self.name_input.setMinimumWidth(scaled(300))
         form_layout.addRow(tr("poc.sync.repo_name") + ":", self.name_input)
-        
+
         self.url_input = QLineEdit()
         self.url_input.setText(url)
         self.url_input.setPlaceholderText(tr("poc.sync.repo_url_placeholder"))
@@ -84,6 +86,64 @@ class SyncThread(QThread):
         self.repo_url = repo_url
         self.repo_name = repo_name
         self._is_running = True
+
+    @staticmethod
+    def _extract_poc_id(file_path):
+        """从 YAML 文件中提取 POC ID"""
+        try:
+            with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                content = f.read()
+
+            # 尝试解析 YAML
+            try:
+                data = yaml.safe_load(content)
+                if data and isinstance(data, dict):
+                    poc_id = data.get('id')
+                    if poc_id:
+                        return str(poc_id)
+            except yaml.YAMLError:
+                pass
+
+            # 如果 YAML 解析失败，使用正则表达式提取
+            id_pattern = re.compile(r'^id:\s*["\']?(.+?)["\']?\s*$', re.MULTILINE | re.IGNORECASE)
+            match = id_pattern.search(content)
+            if match:
+                return match.group(1).strip()
+
+        except Exception:
+            pass
+
+        return None
+
+    @staticmethod
+    def _extract_poc_severity(file_path):
+        """从 YAML 文件中提取 POC 严重程度"""
+        try:
+            with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                content = f.read()
+
+            # 尝试解析 YAML
+            try:
+                data = yaml.safe_load(content)
+                if data and isinstance(data, dict):
+                    info = data.get('info', {})
+                    if isinstance(info, dict):
+                        severity = info.get('severity')
+                        if severity:
+                            return str(severity).lower()
+            except yaml.YAMLError:
+                pass
+
+            # 如果 YAML 解析失败，使用正则表达式提取
+            severity_pattern = re.compile(r'severity:\s*["\']?(.+?)["\']?\s*$', re.MULTILINE | re.IGNORECASE)
+            match = severity_pattern.search(content)
+            if match:
+                return match.group(1).strip().lower()
+
+        except Exception:
+            pass
+
+        return "other"
 
     def run(self):
         try:
@@ -135,6 +195,7 @@ class SyncThread(QThread):
             # 统计复制的文件数
             copied_count = 0
             skipped_count = 0
+            skipped_dup_count = 0  # 仓库内部重复计数
             yaml_files = []
 
             # 收集所有 YAML 文件
@@ -149,34 +210,67 @@ class SyncThread(QThread):
             # 确保目标目录存在
             os.makedirs(self.target_dir, exist_ok=True)
 
-            # 复制文件（去重）
-            for i, src_path in enumerate(yaml_files):
+            # 收集目标目录中已存在的 POC ID（递归检查所有子目录）
+            existing_poc_ids = set()
+            for root, dirs, files in os.walk(self.target_dir):
+                for existing_file in files:
+                    if existing_file.endswith(('.yaml', '.yml')):
+                        existing_path = os.path.join(root, existing_file)
+                        poc_id = self._extract_poc_id(existing_path)
+                        if poc_id:
+                            existing_poc_ids.add(poc_id)
+
+            if existing_poc_ids:
+                self.log_signal.emit(f"[*] {tr('poc.sync.existing_pocs', count=len(existing_poc_ids))}")
+
+            # 先扫描所有下载的文件，提取 ID 并去重（处理仓库内部重复）
+            # key: poc_id, value: file_path
+            unique_pocs_in_repo = {}
+            for src_path in yaml_files:
+                poc_id = self._extract_poc_id(src_path)
+                if poc_id:
+                    # 如果ID已存在，保留第一个遇到的文件
+                    if poc_id not in unique_pocs_in_repo:
+                        unique_pocs_in_repo[poc_id] = src_path
+
+            # 统计仓库内部重复数量
+            repo_dup_count = total_files - len(unique_pocs_in_repo)
+            if repo_dup_count > 0:
+                self.log_signal.emit(f"[*] {tr('poc.sync.repo_duplicates', count=repo_dup_count)}")
+
+            # 复制文件（基于 POC ID 去重，按 severity 分类存放）
+            total_unique = len(unique_pocs_in_repo)
+            for i, (poc_id, src_path) in enumerate(unique_pocs_in_repo.items()):
                 if not self._is_running:
                     break
 
+                # 基于 POC ID 去重（与本地已存在的POC比较）
+                if poc_id in existing_poc_ids:
+                    skipped_count += 1
+                    continue
+
+                # 提取 POC 的严重程度，按严重程度分类存放
+                severity = self._extract_poc_severity(src_path)
+                # 规范化严重程度名称
+                valid_severities = ['critical', 'high', 'medium', 'low', 'info']
+                if severity not in valid_severities:
+                    severity = 'other'
+
+                # 构建目标路径：cloud/{severity}/{filename}
                 filename = os.path.basename(src_path)
-                dst_path = os.path.join(self.target_dir, filename)
+                dst_path = os.path.join(self.target_dir, severity, filename)
 
-                # 检查文件是否已存在
-                if os.path.exists(dst_path):
-                    # 比较文件内容
-                    with open(src_path, 'rb') as f_src:
-                        src_content = f_src.read()
-                    with open(dst_path, 'rb') as f_dst:
-                        dst_content = f_dst.read()
+                # 确保目标目录存在
+                os.makedirs(os.path.dirname(dst_path), exist_ok=True)
 
-                    if src_content == dst_content:
-                        # 文件已存在且内容相同，跳过
-                        skipped_count += 1
-                        continue
-
-                # 文件不存在或内容不同，复制
+                # POC ID 不存在，复制文件
                 shutil.copy2(src_path, dst_path)
+                existing_poc_ids.add(poc_id)  # 更新已存在的 ID 集合
                 copied_count += 1
 
                 if (i + 1) % 100 == 0:
-                    self.log_signal.emit(f"[*] {tr('poc.sync.copied_progress', current=i + 1, total=total_files)}")
-                    self.progress_signal.emit(i + 1, total_files)
+                    self.log_signal.emit(f"[*] {tr('poc.sync.copied_progress', current=i + 1, total=total_unique)}")
+                    self.progress_signal.emit(i + 1, total_unique)
 
             # 清理临时文件
             shutil.rmtree(temp_dir, ignore_errors=True)

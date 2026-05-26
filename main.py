@@ -2,6 +2,14 @@ import sys
 import os
 from collections import deque
 from pathlib import Path
+
+# macOS IMKCFRunLoopWakeUpReliable 警告修复
+# 设置环境变量禁用某些Qt输入法功能以减少系统警告
+if sys.platform == 'darwin':
+    # 禁用Qt的输入方法框架，减少IMK相关警告
+    os.environ.setdefault('QT_IM_MODULE', 'qtvirtualkeyboard')
+    # 设置QT_LOGGING_RULES过滤相关警告
+    os.environ.setdefault('QT_LOGGING_RULES', '*.warning=false;*.critical=false')
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                              QLabel, QLineEdit, QPushButton, QTextEdit, QTableWidget,
                              QTableWidgetItem, QHeaderView, QFileDialog, QTabWidget,
@@ -223,15 +231,137 @@ class POCLoadThread(QThread):
     loaded_signal = pyqtSignal(list)
     error_signal = pyqtSignal(str)
 
-    def __init__(self, poc_library):
+    def __init__(self, poc_library, force_refresh: bool = False, severity_filter: str = None):
         super().__init__()
         self.poc_library = poc_library
+        self.force_refresh = force_refresh
+        self.severity_filter = severity_filter
 
     def run(self):
         try:
-            self.loaded_signal.emit(self.poc_library.get_all_pocs(use_cache=False))
+            # 优先使用缓存，只有缓存无效或强制刷新时才重新解析
+            self.loaded_signal.emit(self.poc_library.get_all_pocs(use_cache=True, force_refresh=self.force_refresh, severity_filter=self.severity_filter))
         except Exception as exc:
             self.error_signal.emit(str(exc))
+
+
+class POCRenderThread(QThread):
+    """Render POC table rows in batches to avoid UI blocking."""
+
+    batch_ready = pyqtSignal(int, list)  # start_row, items_batch
+    finished_signal = pyqtSignal()
+
+    def __init__(self, pocs):
+        super().__init__()
+        self.pocs = pocs
+        self._stopped = False
+
+    def stop(self):
+        """Stop the rendering thread."""
+        self._stopped = True
+
+    def run(self):
+        """Render rows in batches."""
+        from PyQt5.QtWidgets import QTableWidgetItem
+        from PyQt5.QtGui import QColor, QFont
+
+        batch_size = 50
+        total = len(self.pocs)
+
+        severity_colors = {
+            'critical': QColor('#9b59b6'),
+            'high': QColor('#e74c3c'),
+            'medium': QColor('#e67e22'),
+            'low': QColor('#3498db'),
+            'info': QColor('#7f8c8d')
+        }
+        critical_font = QFont("Arial", 9, QFont.Bold)
+
+        type_colors = {
+            "RCE": QColor("#e74c3c"), "SQLi": QColor("#f39c12"), "XSS": QColor("#27ae60"),
+            "SSRF": QColor("#3498db"), "LFI": QColor("#9b59b6"), "未授权": QColor("#e67e22"),
+            "信息泄露": QColor("#1abc9c"), "其他": QColor("#7f8c8d")
+        }
+        default_color = QColor("#7f8c8d")
+
+        for start in range(0, total, batch_size):
+            if self._stopped:
+                return
+
+            end = min(start + batch_size, total)
+            batch = []
+
+            for i in range(start, end):
+                poc = self.pocs[i]
+                row_items = []
+
+                # ID
+                id_item = QTableWidgetItem(poc['id'])
+                id_item.setData(Qt.UserRole, poc['path'])
+                row_items.append(id_item)
+
+                # 名称
+                row_items.append(QTableWidgetItem(poc['name']))
+
+                # 严重程度
+                severity = poc.get('severity', 'info')
+                severity_item = QTableWidgetItem(severity)
+                color = severity_colors.get(severity, default_color)
+                severity_item.setForeground(color)
+                if severity == 'critical':
+                    severity_item.setFont(critical_font)
+                row_items.append(severity_item)
+
+                # 类型
+                poc_type = self._get_poc_type_for_render(poc)
+                type_item = QTableWidgetItem(poc_type)
+                type_item.setForeground(type_colors.get(poc_type, default_color))
+                row_items.append(type_item)
+
+                # 来源
+                folder_key = poc.get("folder_key", "__root__")
+                folder_label = poc.get("folder_label", "")
+                source_text = self._folder_filter_label_for_render(folder_key, folder_label)
+                row_items.append(QTableWidgetItem(source_text))
+
+                batch.append((i, row_items))
+
+            self.batch_ready.emit(start, batch)
+            # 短暂休眠让UI有机会处理事件
+            self.msleep(5)
+
+        self.finished_signal.emit()
+
+    def _get_poc_type_for_render(self, poc):
+        """简化版类型判断，用于渲染线程"""
+        tags = str(poc.get('tags', '')).lower()
+        if 'rce' in tags:
+            return 'RCE'
+        elif 'sqli' in tags or 'sql' in tags:
+            return 'SQLi'
+        elif 'xss' in tags:
+            return 'XSS'
+        elif 'ssrf' in tags:
+            return 'SSRF'
+        elif 'lfi' in tags or 'path traversal' in tags:
+            return 'LFI'
+        elif 'unauth' in tags or 'unauthorized' in tags:
+            return '未授权'
+        elif 'info' in tags or 'leak' in tags:
+            return '信息泄露'
+        return '其他'
+
+    def _folder_filter_label_for_render(self, folder_key, folder_label):
+        """简化版文件夹标签生成"""
+        if folder_key == '__root__':
+            return '内置'
+        elif folder_key == 'custom':
+            return '自定义'
+        elif folder_key == 'cloud':
+            return '云端同步'
+        elif folder_key == 'user_generated':
+            return 'AI生成'
+        return folder_label if folder_label else folder_key
 
 
 class MainWindow(QMainWindow):
@@ -262,6 +392,8 @@ class MainWindow(QMainWindow):
         self.all_scan_pocs = []
         self._poc_load_thread = None
         self._scan_poc_table_dirty = True
+
+        # POC 相关变量
         self._scan_runtime_vuln_count = 0
         self._scan_runtime_severity_counts = {'critical': 0, 'high': 0, 'medium': 0, 'low': 0, 'info': 0}
         self._historical_vuln_count = 0
@@ -286,10 +418,6 @@ class MainWindow(QMainWindow):
         # 初始化快捷键
         self._setup_shortcuts()
 
-        # 加载 POC 列表
-        # 加载 POC 列表
-        self.refresh_poc_list()
-
         # 连接任务队列信号
         from core.task_queue_manager import get_task_queue_manager
         self.task_queue = get_task_queue_manager()
@@ -297,6 +425,21 @@ class MainWindow(QMainWindow):
 
         # 启动时检查更新（如果启用）
         self._check_update_on_startup()
+
+        # 延迟初始化仪表盘POC计数，避免启动时遍历文件系统
+        QTimer.singleShot(500, self._update_dashboard_poc_count)
+
+    def _update_dashboard_poc_count(self):
+        """延迟更新仪表盘的POC计数"""
+        if hasattr(self, 'card_pocs') and hasattr(self, 'poc_library'):
+            try:
+                poc_count = self.poc_library.get_poc_count()
+                # 获取所有QLabel，第二个是值标签（第一个是标题）
+                labels = self.card_pocs.findChildren(QLabel)
+                if len(labels) >= 2:
+                    labels[1].setText(str(poc_count))
+            except Exception:
+                pass
 
     def _set_window_icon(self):
         """设置窗口图标（会显示在标题栏和任务栏）"""
@@ -699,6 +842,10 @@ class MainWindow(QMainWindow):
         """切换页面"""
         self.content_stack.setCurrentIndex(page_index)
         self._update_nav_selection(page_index)
+
+        # POC管理页面改为按需加载：
+        # 用户需要在左侧选择severity，然后点击"加载"按钮或自动触发加载
+        # 首次进入时不自动加载所有POC
 
         # 更新页面标题
         titles = {
@@ -1104,12 +1251,18 @@ class MainWindow(QMainWindow):
         self.settings_proxy_type.setMinimumWidth(scaled(150))
         proxy_layout.addWidget(self.settings_proxy_type, 1, 1)
 
-        # 代理服务器
+        # 代理服务器（主机名和端口在同一行）
         proxy_layout.addWidget(QLabel(tr("settings.general.proxy_server")), 2, 0)
-        self.settings_proxy_server = QLineEdit()
-        self.settings_proxy_server.setPlaceholderText("例如: 127.0.0.1:7890")
-        self.settings_proxy_server.setMinimumWidth(scaled(250))
-        proxy_layout.addWidget(self.settings_proxy_server, 2, 1)
+        server_layout = QHBoxLayout()
+        self.settings_proxy_host = QLineEdit()
+        self.settings_proxy_host.setPlaceholderText("127.0.0.1")
+        self.settings_proxy_host.setMinimumWidth(scaled(150))
+        server_layout.addWidget(self.settings_proxy_host)
+        self.settings_proxy_port = QLineEdit()
+        self.settings_proxy_port.setPlaceholderText("7890")
+        self.settings_proxy_port.setMaximumWidth(scaled(80))
+        server_layout.addWidget(self.settings_proxy_port)
+        proxy_layout.addLayout(server_layout, 2, 1)
 
         # 代理用户名
         proxy_layout.addWidget(QLabel(tr("settings.general.proxy_username")), 3, 0)
@@ -3697,7 +3850,12 @@ class MainWindow(QMainWindow):
             self.settings_proxy_enable.setChecked(proxy_config.get("enabled", False))
             type_index = self.settings_proxy_type.findData(proxy_config.get("type", "http"))
             self.settings_proxy_type.setCurrentIndex(type_index if type_index >= 0 else 0)
-            self.settings_proxy_server.setText(proxy_config.get("server", ""))
+            # 解析服务器地址（格式：host:port）
+            server = proxy_config.get("server", "")
+            if server and ":" in server:
+                parts = server.rsplit(":", 1)
+                self.settings_proxy_host.setText(parts[0])
+                self.settings_proxy_port.setText(parts[1])
             self.settings_proxy_username.setText(proxy_config.get("username", ""))
             self.settings_proxy_password.setText(proxy_config.get("password", ""))
 
@@ -3765,10 +3923,13 @@ class MainWindow(QMainWindow):
 
         # 保存通用代理配置
         if hasattr(self, 'settings_proxy_enable'):
+            proxy_host = self.settings_proxy_host.text().strip()
+            proxy_port = self.settings_proxy_port.text().strip()
+            proxy_server = f"{proxy_host}:{proxy_port}" if proxy_host and proxy_port else ""
             self.settings.save_general_proxy_config({
                 "enabled": self.settings_proxy_enable.isChecked(),
                 "type": self.settings_proxy_type.currentData(),
-                "server": self.settings_proxy_server.text().strip(),
+                "server": proxy_server,
                 "username": self.settings_proxy_username.text().strip(),
                 "password": self.settings_proxy_password.text().strip()
             })
@@ -3777,7 +3938,7 @@ class MainWindow(QMainWindow):
             set_proxy_config(
                 enabled=self.settings_proxy_enable.isChecked(),
                 proxy_type=self.settings_proxy_type.currentData(),
-                server=self.settings_proxy_server.text().strip(),
+                server=proxy_server,
                 username=self.settings_proxy_username.text().strip(),
                 password=self.settings_proxy_password.text().strip()
             )
@@ -4066,7 +4227,7 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout(self.dashboard_tab)
         layout.setSpacing(scaled(10))
 
-        # 统计数据
+        # 统计数据 - 使用延迟加载避免启动时的文件系统遍历
         from core.scan_history import get_scan_history
         stats = get_scan_history().get_statistics()
 
@@ -4074,11 +4235,10 @@ class MainWindow(QMainWindow):
         cards_layout = QHBoxLayout()
         cards_layout.setSpacing(scaled(10))
 
-        poc_count = self.poc_library.get_poc_count() if hasattr(self, 'poc_library') else 0
-
+        # 使用占位符，稍后通过定时器更新POC计数
         self.card_scans = self._create_mini_card(tr("dashboard.scan_count"), str(stats.get('total_scans', 0)), "#3498db")
         self.card_vulns = self._create_mini_card(tr("dashboard.vuln_found"), str(stats.get('total_vulns', 0)), "#e74c3c")
-        self.card_pocs = self._create_mini_card(tr("dashboard.poc_count"), str(poc_count), "#27ae60")
+        self.card_pocs = self._create_mini_card(tr("dashboard.poc_count"), "...", "#27ae60")
         self.card_critical = self._create_mini_card(tr("dashboard.critical_vulns"), str(stats.get('severity_distribution', {}).get('critical', 0)), "#9b59b6")
         self.card_high = self._create_mini_card(tr("dashboard.high_vulns"), str(stats.get('severity_distribution', {}).get('high', 0)), "#e67e22")
 
@@ -5072,6 +5232,10 @@ class MainWindow(QMainWindow):
 
     # ================= POC 管理页面 =================
     def setup_poc_tab(self):
+        """POC管理页面 - 左右分栏布局
+        左边：severity选择列表
+        右边：POC表格和工具栏
+        """
         layout = QVBoxLayout(self.poc_tab)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(scaled(15))
@@ -5094,6 +5258,11 @@ class MainWindow(QMainWindow):
         btn_sync.setToolTip(tr("poc.sync_tooltip"))
         btn_sync.clicked.connect(self.open_poc_sync_dialog)
         toolbar_layout.addWidget(btn_sync)
+
+        btn_dedup = self._create_fortress_button(tr("poc.deduplicate"), "warning")
+        btn_dedup.setToolTip(tr("poc.deduplicate_tooltip"))
+        btn_dedup.clicked.connect(self.deduplicate_pocs)
+        toolbar_layout.addWidget(btn_dedup)
 
         btn_generate = self._create_fortress_button(tr("poc.generate"), "warning")
         btn_generate.setToolTip(tr("poc.generate_tooltip"))
@@ -5120,11 +5289,87 @@ class MainWindow(QMainWindow):
 
         layout.addWidget(toolbar_container)
 
-        # ===== 搜索和筛选区域 =====
-        filter_container = QWidget()
-        filter_container.setStyleSheet(scaled_style(f"background-color: {FORTRESS_COLORS['content_bg']}; border-radius: 8px;"))
-        filter_layout = QHBoxLayout(filter_container)
-        filter_layout.setContentsMargins(scaled(15), scaled(10), scaled(15), scaled(10))
+        # ===== 左右分栏主区域 =====
+        main_splitter = QSplitter(Qt.Horizontal)
+        main_splitter.setHandleWidth(scaled(8))
+        main_splitter.setStyleSheet(f"""
+            QSplitter::handle {{
+                background-color: {FORTRESS_COLORS['nav_border']};
+            }}
+            QSplitter::handle:hover {{
+                background-color: {FORTRESS_COLORS['btn_primary']};
+            }}
+        """)
+
+        # ---- 左侧：Severity选择列表 ----
+        left_container = QWidget()
+        left_container.setStyleSheet(scaled_style(f"background-color: {FORTRESS_COLORS['content_bg']}; border-radius: 8px;"))
+        left_layout = QVBoxLayout(left_container)
+        left_layout.setContentsMargins(scaled(15), scaled(15), scaled(15), scaled(15))
+        left_layout.setSpacing(scaled(10))
+
+        # Severity列表标题
+        severity_title = QLabel(tr("poc.select_severity"))
+        severity_title.setStyleSheet(scaled_style(f"color: {FORTRESS_COLORS['text_primary']}; font-size: 14px; font-weight: bold;"))
+        left_layout.addWidget(severity_title)
+
+        # Severity列表
+        self.severity_list = QListWidget()
+        self.severity_list.setSelectionMode(QListWidget.SingleSelection)
+        self.severity_list.setStyleSheet(scaled_style(f"""
+            QListWidget {{
+                border: 1px solid {FORTRESS_COLORS['nav_border']};
+                border-radius: 6px;
+                background-color: {FORTRESS_COLORS['content_bg']};
+                outline: none;
+            }}
+            QListWidget::item {{
+                padding: 10px 15px;
+                border-radius: 4px;
+                margin: 2px 0px;
+            }}
+            QListWidget::item:selected {{
+                background-color: {FORTRESS_COLORS['btn_primary']};
+                color: white;
+            }}
+            QListWidget::item:hover {{
+                background-color: {FORTRESS_COLORS['btn_primary']}40;
+            }}
+        """))
+
+        # 添加severity选项（使用英语显示）
+        severities = [
+            ("critical", "critical"),
+            ("high", "high"),
+            ("medium", "medium"),
+            ("low", "low"),
+            ("info", "info"),
+            ("other", "other")
+        ]
+        for severity_key, severity_name in severities:
+            item = QListWidgetItem(f"{severity_name}")
+            item.setData(Qt.UserRole, severity_key)
+            self.severity_list.addItem(item)
+
+        self.severity_list.currentRowChanged.connect(self._on_severity_list_changed)
+        left_layout.addWidget(self.severity_list)
+
+        # 加载按钮
+        btn_load_severity = self._create_fortress_button(tr("poc.load_selected"), "primary")
+        btn_load_severity.clicked.connect(self.refresh_poc_list)
+        left_layout.addWidget(btn_load_severity)
+
+        main_splitter.addWidget(left_container)
+
+        # ---- 右侧：POC表格区域 ----
+        right_container = QWidget()
+        right_container.setStyleSheet(scaled_style(f"background-color: {FORTRESS_COLORS['content_bg']}; border-radius: 8px;"))
+        right_layout = QVBoxLayout(right_container)
+        right_layout.setContentsMargins(scaled(15), scaled(15), scaled(15), scaled(15))
+        right_layout.setSpacing(scaled(10))
+
+        # 搜索和筛选
+        filter_layout = QHBoxLayout()
 
         self.poc_search_input = QLineEdit()
         self.poc_search_input.setPlaceholderText(tr("poc.search_placeholder"))
@@ -5157,21 +5402,9 @@ class MainWindow(QMainWindow):
         self.poc_type_filter.currentTextChanged.connect(self.filter_poc_table)
         filter_layout.addWidget(self.poc_type_filter)
 
-        filter_layout.addWidget(QLabel(tr("poc.filter_severity")))
-        self.poc_severity_filter = QComboBox()
-        self.poc_severity_filter.addItems([tr("common.all"), "critical", "high", "medium", "low", "info"])
-        self.poc_severity_filter.setFixedWidth(scaled(100))
-        self.poc_severity_filter.currentTextChanged.connect(self.filter_poc_table)
-        filter_layout.addWidget(self.poc_severity_filter)
+        right_layout.addLayout(filter_layout)
 
-        layout.addWidget(filter_container)
-
-        # ===== POC 列表表格 =====
-        table_container = QWidget()
-        table_container.setStyleSheet(scaled_style(f"background-color: {FORTRESS_COLORS['content_bg']}; border-radius: 8px;"))
-        table_layout = QVBoxLayout(table_container)
-        table_layout.setContentsMargins(scaled(15), scaled(15), scaled(15), scaled(15))
-
+        # POC表格
         self.poc_table = QTableWidget()
         self.poc_table.setColumnCount(5)
         self.poc_table.setHorizontalHeaderLabels(["ID", tr("poc.col_name"), tr("poc.col_severity"), tr("poc.col_type"), tr("poc.col_source")])
@@ -5192,25 +5425,43 @@ class MainWindow(QMainWindow):
         self.poc_table.setContextMenuPolicy(Qt.CustomContextMenu)
         self.poc_table.customContextMenuRequested.connect(self.show_poc_context_menu)
 
-        table_layout.addWidget(self.poc_table)
+        right_layout.addWidget(self.poc_table)
 
         # 提示
         tips = QLabel(tr("poc.tips"))
         tips.setStyleSheet(scaled_style(f"color: {FORTRESS_COLORS['text_secondary']}; font-size: 12px;"))
-        table_layout.addWidget(tips)
+        right_layout.addWidget(tips)
 
-        layout.addWidget(table_container, 1)
+        main_splitter.addWidget(right_container)
+        main_splitter.setSizes([scaled(200), scaled(800)])  # 设置左右比例
 
-    def refresh_poc_list(self):
-        """Refresh the POC table without blocking the UI."""
+        layout.addWidget(main_splitter, 1)
+
+        # 默认选中第一行（在所有控件创建完成后再设置，避免信号触发时poc_table不存在）
+        self.severity_list.setCurrentRow(0)
+
+    def refresh_poc_list(self, force_refresh: bool = False):
+        """Refresh the POC table without blocking the UI.
+
+        参数:
+            force_refresh: 是否强制刷新缓存（忽略缓存），默认为 False
+        """
         if self._poc_load_thread and self._poc_load_thread.isRunning():
             return
 
         self.poc_table.setEnabled(False)
-        self.statusBar().showMessage("Loading POCs...")
+        if force_refresh:
+            self.statusBar().showMessage(tr("poc.refreshing_force"))
+        else:
+            self.statusBar().showMessage(tr("poc.refreshing"))
 
-        self._poc_load_thread = POCLoadThread(self.poc_library)
-        self._poc_load_thread.loaded_signal.connect(self._on_poc_list_loaded)
+        # 获取当前的 severity 筛选
+        severity_filter = self._get_current_severity_filter()
+
+        # 使用带筛选的加载线程
+        self._poc_load_thread = POCLoadThread(self.poc_library, force_refresh, severity_filter)
+        self._poc_load_thread.loaded_signal.connect(self._on_poc_list_loaded_all)
+
         self._poc_load_thread.error_signal.connect(self._on_poc_list_load_failed)
         self._poc_load_thread.finished.connect(self._cleanup_poc_load_thread)
         self._poc_load_thread.start()
@@ -5219,12 +5470,26 @@ class MainWindow(QMainWindow):
         self.poc_table.setEnabled(True)
         self._poc_load_thread = None
 
-    def _on_poc_list_loaded(self, pocs):
+    def _on_poc_list_loaded_all(self, pocs):
+        """处理非分页加载完成"""
         self.all_poc_data = pocs
         self._populate_poc_source_filter(self.all_poc_data)
         self.filter_poc_table()
         self.update_scan_poc_list(self.all_poc_data)
         self.statusBar().showMessage(tr("poc.loaded_count", count=len(self.all_poc_data)))
+
+    def _get_current_severity_filter(self):
+        """获取当前的 severity 筛选值"""
+        if hasattr(self, 'severity_list'):
+            current_item = self.severity_list.currentItem()
+            if current_item:
+                return current_item.data(Qt.UserRole)
+        return None
+
+    def _on_severity_list_changed(self, row):
+        """Severity 列表选择改变时触发加载"""
+        # 自动触发加载
+        self.refresh_poc_list()
 
     def _on_poc_list_load_failed(self, error):
         QMessageBox.warning(self, tr("poc.refresh_failed"), tr("poc.refresh_error", error=error))
@@ -5310,52 +5575,54 @@ class MainWindow(QMainWindow):
             return tr("poc.type_other")
 
     def _render_poc_table(self, pocs):
-        """渲染 POC 表格"""
+        """渲染 POC 表格 - 使用异步批量渲染"""
+        # 如果正在渲染，先停止
+        if hasattr(self, '_poc_render_thread') and self._poc_render_thread is not None and self._poc_render_thread.isRunning():
+            self._poc_render_thread.stop()
+            self._poc_render_thread.wait()
+
+        # 清空表格
         self.poc_table.setUpdatesEnabled(False)
         self.poc_table.setRowCount(0)
-        self.poc_table.setRowCount(len(pocs))
-
-        for row, poc in enumerate(pocs):
-            # ID
-            id_item = QTableWidgetItem(poc['id'])
-            id_item.setData(Qt.UserRole, poc['path'])  # 存储路径
-            self.poc_table.setItem(row, 0, id_item)
-
-            # 名称
-            self.poc_table.setItem(row, 1, QTableWidgetItem(poc['name']))
-
-            # 严重程度
-            severity_item = QTableWidgetItem(poc['severity'])
-            if poc['severity'] == 'critical':
-                severity_item.setForeground(QColor('#9b59b6'))
-                severity_item.setFont(QFont("Arial", scaled(9), QFont.Bold))
-            elif poc['severity'] == 'high':
-                severity_item.setForeground(QColor('#e74c3c'))
-            elif poc['severity'] == 'medium':
-                severity_item.setForeground(QColor('#e67e22'))
-            elif poc['severity'] == 'low':
-                severity_item.setForeground(QColor('#3498db'))
-            self.poc_table.setItem(row, 2, severity_item)
-
-            # 类型
-            poc_type = self._get_poc_type(poc)
-            type_item = QTableWidgetItem(poc_type)
-            type_colors = {
-                "RCE": "#e74c3c", "SQLi": "#f39c12", "XSS": "#27ae60",
-                "SSRF": "#3498db", "LFI": "#9b59b6", "未授权": "#e67e22",
-                tr("poc.type_info_leak"): "#1abc9c", tr("poc.type_other"): "#7f8c8d"
-            }
-            type_item.setForeground(QColor(type_colors.get(poc_type, "#7f8c8d")))
-            self.poc_table.setItem(row, 3, type_item)
-
-            # 来源（按 POC 所在文件夹显示，支持用户任意自定义目录）
-            source_text = self._folder_filter_label(
-                poc.get("folder_key", "__root__"),
-                poc.get("folder_label", "")
-            )
-            self.poc_table.setItem(row, 4, QTableWidgetItem(source_text))
-
         self.poc_table.setUpdatesEnabled(True)
+
+        # 如果没有数据，直接返回
+        if not pocs:
+            return
+
+        # 启动后台渲染线程
+        self._poc_render_thread = POCRenderThread(pocs)
+        self._poc_render_thread.batch_ready.connect(self._on_poc_render_batch)
+        self._poc_render_thread.finished_signal.connect(self._on_poc_render_finished)
+        self._poc_render_thread.start()
+
+    def _on_poc_render_batch(self, start_row, batch):
+        """处理批量渲染完成的回调"""
+        if not batch:
+            return
+
+        # 获取最大行号
+        max_row = max(row for row, _ in batch)
+
+        # 确保表格有足够的行数
+        current_rows = self.poc_table.rowCount()
+        if max_row >= current_rows:
+            self.poc_table.setRowCount(max_row + 1)
+
+        # 插入批量数据
+        self.poc_table.setUpdatesEnabled(False)
+        for row, items in batch:
+            for col, item in enumerate(items):
+                self.poc_table.setItem(row, col, item)
+        self.poc_table.setUpdatesEnabled(True)
+
+        # 强制刷新显示
+        self.poc_table.viewport().update()
+
+    def _on_poc_render_finished(self):
+        """渲染完成的回调"""
+        self._poc_render_thread = None
+        self.statusBar().showMessage(tr("poc.loaded_count", count=len(self.all_poc_data)))
 
     def filter_poc_table(self):
         """筛选 POC 表格 - 增强版，支持来源分类和 CVE 搜索"""
@@ -5364,7 +5631,6 @@ class MainWindow(QMainWindow):
 
         keyword = self.poc_search_input.text().lower().strip()
         type_filter = self.poc_type_filter.currentText()
-        severity_filter = self.poc_severity_filter.currentText()
         source_filter = self.poc_source_filter.currentData() if hasattr(self, 'poc_source_filter') else ""
 
         filtered = []
@@ -5385,11 +5651,6 @@ class MainWindow(QMainWindow):
             if type_filter != tr("common.all"):
                 poc_type = self._get_poc_type(poc)
                 if poc_type != type_filter:
-                    continue
-
-            # 严重程度匹配
-            if severity_filter != tr("common.all"):
-                if poc.get('severity', '').lower() != severity_filter.lower():
                     continue
 
             filtered.append(poc)
@@ -5587,6 +5848,113 @@ class MainWindow(QMainWindow):
         dialog = POCSyncDialog(str(self.poc_library.cloud_path), self, colors=FORTRESS_COLORS)
         if dialog.exec_() == QDialog.Accepted:
             self.refresh_poc_list()
+
+    def deduplicate_pocs(self):
+        """根据 ID 对所有 POC 文件进行去重"""
+        reply = QMessageBox.question(
+            self,
+            tr("poc.deduplicate_confirm_title"),
+            tr("poc.deduplicate_confirm_body"),
+            QMessageBox.Yes | QMessageBox.No
+        )
+
+        if reply != QMessageBox.Yes:
+            return
+
+        import yaml
+        import re
+
+        def extract_poc_id(file_path):
+            """从 YAML 文件中提取 POC ID"""
+            try:
+                with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                    content = f.read()
+
+                # 尝试解析 YAML
+                try:
+                    data = yaml.safe_load(content)
+                    if data and isinstance(data, dict):
+                        poc_id = data.get('id')
+                        if poc_id:
+                            return str(poc_id)
+                except yaml.YAMLError:
+                    pass
+
+                # 如果 YAML 解析失败，使用正则表达式提取
+                id_pattern = re.compile(r'^id:\s*["\']?(.+?)["\']?\s*$', re.MULTILINE | re.IGNORECASE)
+                match = id_pattern.search(content)
+                if match:
+                    return match.group(1).strip()
+            except Exception:
+                pass
+            return None
+
+        # 扫描所有 POC 文件
+        poc_files = []
+        for root, dirs, files in os.walk(self.poc_library.library_path):
+            for file in files:
+                if file.endswith(('.yaml', '.yml')):
+                    file_path = os.path.join(root, file)
+                    poc_id = extract_poc_id(file_path)
+                    if poc_id:
+                        poc_files.append((poc_id, file_path))
+
+        if not poc_files:
+            QMessageBox.information(self, tr("msg.info"), tr("poc.no_pocs_to_dedup"))
+            return
+
+        # 按 ID 分组
+        poc_groups = {}
+        for poc_id, file_path in poc_files:
+            if poc_id not in poc_groups:
+                poc_groups[poc_id] = []
+            poc_groups[poc_id].append(file_path)
+
+        # 找出重复的 POC
+        duplicates = {poc_id: files for poc_id, files in poc_groups.items() if len(files) > 1}
+
+        if not duplicates:
+            QMessageBox.information(self, tr("msg.info"), tr("poc.no_duplicates_found"))
+            return
+
+        # 显示确认对话框
+        dup_count = sum(len(files) - 1 for files in duplicates.values())
+        message = tr("poc.duplicates_found", count=len(duplicates), total=dup_count)
+        message += "\n\n"
+        for poc_id, files in list(duplicates.items())[:5]:  # 只显示前5个
+            message += f"ID: {poc_id} ({len(files)} 个文件)\n"
+        if len(duplicates) > 5:
+            message += f"... 还有 {len(duplicates) - 5} 个\n"
+
+        reply = QMessageBox.question(
+            self,
+            tr("poc.deduplicate_confirm_title"),
+            message,
+            QMessageBox.Yes | QMessageBox.No
+        )
+
+        if reply != QMessageBox.Yes:
+            return
+
+        # 删除重复文件（保留第一个）
+        deleted_count = 0
+        for poc_id, files in duplicates.items():
+            # 保留第一个文件，删除其余的
+            for file_path in files[1:]:
+                try:
+                    os.remove(file_path)
+                    deleted_count += 1
+                except Exception as e:
+                    print(f"删除文件失败: {file_path}, 错误: {e}")
+
+        QMessageBox.information(
+            self,
+            tr("msg.success"),
+            tr("poc.deduplicate_success", count=deleted_count)
+        )
+
+        # 刷新 POC 列表
+        self.refresh_poc_list()
 
     def open_poc_editor(self):
         """打开 POC 编辑器"""
